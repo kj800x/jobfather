@@ -1,0 +1,49 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: jobtemplates.jobfather.coolkev.com
+spec:
+  group: jobfather.coolkev.com
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                schedule:
+                  type: string
+                  description: "The schedule for the job to run"
+                acceptanceTest:
+                  type: boolean
+                  description: "Whether the job is an acceptance test"
+                spec:
+                  type: object
+                  description: "PodSpec for the job pod"
+                  x-kubernetes-preserve-unknown-fields: true
+              required:
+                - spec
+
+      additionalPrinterColumns:
+        - name: Schedule
+          jsonPath: .spec.schedule
+          type: string
+        - name: Acceptance Test
+          jsonPath: .spec.acceptanceTest
+          type: boolean
+        - name: Age
+          jsonPath: .metadata.creationTimestamp
+          type: date
+      subresources:
+        status: {}
+  scope: Namespaced
+  names:
+    plural: jobtemplates
+    singular: jobtemplate
+    kind: JobTemplate
+    shortNames:
+      - jt

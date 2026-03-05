@@ -71,7 +71,11 @@ pub async fn job_templates_fragment(
                 }
                 @for jt in &job_templates {
                     tr {
-                        td class="jt-name" { (jt.name_any()) }
+                        td class="jt-name" {
+                            a href=(format!("/job-templates/{}/{}", jt.namespace().unwrap_or_default(), jt.name_any())) {
+                                (jt.name_any())
+                            }
+                        }
                         td { (jt.namespace().unwrap_or_default()) }
                         td class="jt-schedule" {
                             @if let Some(schedule) = &jt.spec.schedule {

@@ -54,6 +54,8 @@ async fn start_http(
             .service(web::job_templates_fragment)
             .service(web::job_template_detail_page)
             .service(web::job_template_detail_fragment)
+            .service(web::job_template_run_modal)
+            .service(web::job_template_run)
             .service(serve_static_file!("htmx.min.js"))
             .service(serve_static_file!("idiomorph.min.js"))
             .service(serve_static_file!("idiomorph-ext.min.js"))

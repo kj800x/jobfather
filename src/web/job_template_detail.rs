@@ -1,9 +1,13 @@
-use actix_web::{get, web, HttpResponse, Responder};
-use k8s_openapi::api::batch::v1::Job;
+use actix_web::{get, post, web, HttpResponse, Responder};
+use k8s_openapi::api::batch::v1::{Job, JobSpec};
+use k8s_openapi::api::core::v1::PodTemplateSpec;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::api::PostParams;
 use kube::{Api, Client, ResourceExt};
 use maud::{html, Markup, DOCTYPE};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use serde::Deserialize;
 
 use crate::db::ArchivedJob;
 use crate::kubernetes::JobTemplate;
@@ -37,6 +41,7 @@ pub async fn job_template_detail_page(
                         hx-swap="morph:innerHTML" {
                         div { "Loading..." }
                     }
+                    div id="modal-container" {}
                 }
             }
         }
@@ -71,16 +76,24 @@ pub async fn job_template_detail_fragment(
     let job_api: Api<Job> = Api::namespaced(client.get_ref().clone(), &namespace);
     let jt_uid = job_template.uid().unwrap_or_default();
     let live_jobs: Vec<Job> = match job_api.list(&Default::default()).await {
-        Ok(list) => list
-            .items
-            .into_iter()
-            .filter(|job| {
-                job.metadata
-                    .owner_references
-                    .as_ref()
-                    .is_some_and(|refs| refs.iter().any(|r| r.uid == jt_uid))
-            })
-            .collect(),
+        Ok(list) => {
+            let mut jobs: Vec<Job> = list
+                .items
+                .into_iter()
+                .filter(|job| {
+                    job.metadata
+                        .owner_references
+                        .as_ref()
+                        .is_some_and(|refs| refs.iter().any(|r| r.uid == jt_uid))
+                })
+                .collect();
+            jobs.sort_by(|a, b| {
+                let a_time = a.status.as_ref().and_then(|s| s.start_time.as_ref());
+                let b_time = b.status.as_ref().and_then(|s| s.start_time.as_ref());
+                b_time.cmp(&a_time)
+            });
+            jobs
+        }
         Err(e) => {
             log::warn!("Failed to list Jobs in {}: {}", namespace, e);
             vec![]
@@ -102,24 +115,34 @@ pub async fn job_template_detail_fragment(
     let markup = html! {
         // JobTemplate info card
         div class="jt-info-card" {
-            div class="jt-info-row" {
-                span class="jt-info-label" { "Schedule" }
-                span class="jt-info-value" {
-                    @if let Some(schedule) = &job_template.spec.schedule {
-                        code { (schedule) }
-                    } @else {
-                        span class="text-muted" { "On-demand" }
+            div class="jt-info-card-body" {
+                div class="jt-info-row" {
+                    span class="jt-info-label" { "Schedule" }
+                    span class="jt-info-value" {
+                        @if let Some(schedule) = &job_template.spec.schedule {
+                            code { (schedule) }
+                        } @else {
+                            span class="text-muted" { "On-demand" }
+                        }
+                    }
+                }
+                div class="jt-info-row" {
+                    span class="jt-info-label" { "Acceptance Test" }
+                    span class="jt-info-value" {
+                        @if job_template.is_acceptance_test() {
+                            span class="badge badge-info" { "Yes" }
+                        } @else {
+                            span class="text-muted" { "No" }
+                        }
                     }
                 }
             }
-            div class="jt-info-row" {
-                span class="jt-info-label" { "Acceptance Test" }
-                span class="jt-info-value" {
-                    @if job_template.is_acceptance_test() {
-                        span class="badge badge-info" { "Yes" }
-                    } @else {
-                        span class="text-muted" { "No" }
-                    }
+            div class="jt-info-actions" {
+                button class="btn btn-primary"
+                    hx-get=(format!("/job-templates/{}/{}/run-modal", namespace, name))
+                    hx-target="#modal-container"
+                    hx-swap="innerHTML" {
+                    "Run Job"
                 }
             }
         }
@@ -231,6 +254,362 @@ fn render_archived_jobs_table(jobs: &[ArchivedJob]) -> Markup {
             }
         }
     }
+}
+
+#[get("/job-templates/{namespace}/{name}/run-modal")]
+pub async fn job_template_run_modal(
+    path: web::Path<(String, String)>,
+    client: web::Data<Client>,
+) -> impl Responder {
+    let (namespace, name) = path.into_inner();
+
+    let jt_api: Api<JobTemplate> = Api::namespaced(client.get_ref().clone(), &namespace);
+    let job_template = match jt_api.get(&name).await {
+        Ok(jt) => jt,
+        Err(e) => {
+            return HttpResponse::NotFound()
+                .content_type("text/html; charset=utf-8")
+                .body(format!("JobTemplate not found: {}", e));
+        }
+    };
+
+    // Extract current args and env from the first container in the pod spec
+    let pod_spec = &job_template.spec.spec;
+    let first_container = pod_spec
+        .get("containers")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first());
+
+    let current_args: Vec<String> = first_container
+        .and_then(|c| c.get("args"))
+        .and_then(|a| a.as_array())
+        .map(|args| {
+            args.iter()
+                .filter_map(|a| a.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let current_command: Vec<String> = first_container
+        .and_then(|c| c.get("command"))
+        .and_then(|a| a.as_array())
+        .map(|args| {
+            args.iter()
+                .filter_map(|a| a.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Separate env vars into editable (plain value) and non-editable (valueFrom / secretKeyRef etc.)
+    let env_array = first_container
+        .and_then(|c| c.get("env"))
+        .and_then(|e| e.as_array());
+
+    let mut editable_env: Vec<(String, String)> = Vec::new();
+    let mut ref_env: Vec<(String, String)> = Vec::new(); // (name, source description)
+
+    if let Some(envs) = env_array {
+        for e in envs {
+            let Some(env_name) = e.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            if e.get("valueFrom").is_some() {
+                // Describe the source for display
+                let source = describe_value_from(e.get("valueFrom").unwrap());
+                ref_env.push((env_name.to_string(), source));
+            } else {
+                let value = e.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                editable_env.push((env_name.to_string(), value.to_string()));
+            }
+        }
+    }
+
+    let container_image = first_container
+        .and_then(|c| c.get("image"))
+        .and_then(|i| i.as_str())
+        .unwrap_or("unknown");
+
+    let args_text = current_args.join("\n");
+
+    let markup = html! {
+        dialog id="run-job-dialog" class="modal" open {
+            div class="modal-backdrop" onclick="this.closest('dialog').remove()" {}
+            div class="modal-content" {
+                div class="modal-header" {
+                    h3 { "Run Job: " (name) }
+                    button class="modal-close" onclick="this.closest('dialog').remove()" { "x" }
+                }
+                form
+                    hx-post=(format!("/job-templates/{}/{}/run", namespace, name))
+                    hx-target="#modal-container"
+                    hx-swap="innerHTML" {
+                    div class="modal-body" {
+                        div class="form-info" {
+                            span class="form-info-label" { "Image" }
+                            code { (container_image) }
+                        }
+                        @if !current_command.is_empty() {
+                            div class="form-info" {
+                                span class="form-info-label" { "Command" }
+                                code { (current_command.join(" ")) }
+                            }
+                        }
+                        div class="form-group" {
+                            label for="args" { "Arguments " span class="text-muted" { "(one per line)" } }
+                            textarea id="args" name="args" class="form-control" rows="4" {
+                                (args_text)
+                            }
+                        }
+                        @if !ref_env.is_empty() {
+                            div class="form-group" {
+                                label { "Environment Variables " span class="text-muted" { "(from secrets/refs - inherited automatically)" } }
+                                @for (env_name, source) in &ref_env {
+                                    div class="env-row env-row-readonly" {
+                                        span class="env-ref-name" { (env_name) }
+                                        span class="env-ref-source" { (source) }
+                                    }
+                                }
+                            }
+                        }
+                        div class="form-group" {
+                            label { "Environment Variables " span class="text-muted" { "(editable)" } }
+                            @for (i, (env_name, env_value)) in editable_env.iter().enumerate() {
+                                div class="env-row" {
+                                    input type="text" name=(format!("env_name_{}", i)) value=(env_name)
+                                        class="form-control env-name" placeholder="NAME";
+                                    input type="text" name=(format!("env_value_{}", i)) value=(env_value)
+                                        class="form-control env-value" placeholder="value";
+                                }
+                            }
+                            // Extra empty rows for adding new env vars
+                            @for i in editable_env.len()..(editable_env.len() + 3) {
+                                div class="env-row" {
+                                    input type="text" name=(format!("env_name_{}", i))
+                                        class="form-control env-name" placeholder="NAME";
+                                    input type="text" name=(format!("env_value_{}", i))
+                                        class="form-control env-value" placeholder="value";
+                                }
+                            }
+                        }
+                    }
+                    div class="modal-footer" {
+                        button type="button" class="btn btn-secondary" onclick="this.closest('dialog').remove()" { "Cancel" }
+                        button type="submit" class="btn btn-primary" { "Run" }
+                    }
+                }
+            }
+        }
+    };
+
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(markup.into_string())
+}
+
+#[derive(Deserialize)]
+pub struct RunJobForm {
+    args: Option<String>,
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, String>,
+}
+
+#[post("/job-templates/{namespace}/{name}/run")]
+pub async fn job_template_run(
+    path: web::Path<(String, String)>,
+    client: web::Data<Client>,
+    form: web::Form<RunJobForm>,
+) -> impl Responder {
+    let (namespace, name) = path.into_inner();
+
+    let jt_api: Api<JobTemplate> = Api::namespaced(client.get_ref().clone(), &namespace);
+    let job_template = match jt_api.get(&name).await {
+        Ok(jt) => jt,
+        Err(e) => {
+            return HttpResponse::NotFound()
+                .content_type("text/html; charset=utf-8")
+                .body(format!("JobTemplate not found: {}", e));
+        }
+    };
+
+    // Parse args from the textarea (one per line, skip blanks)
+    let args: Vec<String> = form
+        .args
+        .as_deref()
+        .unwrap_or("")
+        .lines()
+        .map(|l| l.to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    // Parse editable env vars from the form's flat key-value pairs
+    let mut form_env: Vec<(String, String)> = Vec::new();
+    for i in 0..100 {
+        let env_name_key = format!("env_name_{}", i);
+        let env_value_key = format!("env_value_{}", i);
+        match (form.extra.get(&env_name_key), form.extra.get(&env_value_key)) {
+            (Some(env_name), Some(env_value)) if !env_name.is_empty() => {
+                form_env.push((env_name.clone(), env_value.clone()));
+            }
+            _ => {
+                if i > 20 { break; }
+            }
+        }
+    }
+
+    // Build the Job from the template's pod spec
+    let mut pod_spec: serde_json::Value = job_template.spec.spec.clone();
+
+    // Override args and env on the first container
+    if let Some(containers) = pod_spec.get_mut("containers").and_then(|c| c.as_array_mut()) {
+        if let Some(container) = containers.first_mut() {
+            if !args.is_empty() || job_template.spec.spec.get("containers")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("args"))
+                .is_some()
+            {
+                container["args"] = serde_json::to_value(&args).unwrap_or_default();
+            }
+
+            // Rebuild env: keep all valueFrom entries from the template, replace plain value entries
+            let original_env = container
+                .get("env")
+                .and_then(|e| e.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut new_env: Vec<serde_json::Value> = Vec::new();
+
+            // Preserve all valueFrom entries as-is
+            for entry in &original_env {
+                if entry.get("valueFrom").is_some() {
+                    new_env.push(entry.clone());
+                }
+            }
+
+            // Add the editable env vars from the form
+            for (name, value) in &form_env {
+                new_env.push(serde_json::json!({
+                    "name": name,
+                    "value": value,
+                }));
+            }
+
+            container["env"] = serde_json::to_value(&new_env).unwrap_or_default();
+        }
+    }
+
+    // Add restartPolicy if not set
+    if pod_spec.get("restartPolicy").is_none() {
+        pod_spec["restartPolicy"] = serde_json::Value::String("Never".to_string());
+    }
+
+    let pod_template: k8s_openapi::api::core::v1::PodSpec =
+        match serde_json::from_value(pod_spec) {
+            Ok(spec) => spec,
+            Err(e) => {
+                log::error!("Failed to deserialize pod spec: {}", e);
+                return HttpResponse::InternalServerError()
+                    .content_type("text/html; charset=utf-8")
+                    .body(render_modal_result(false, &format!("Invalid pod spec: {}", e)));
+            }
+        };
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let job_name = format!("{}-{}", name, timestamp);
+
+    let job = Job {
+        metadata: ObjectMeta {
+            name: Some(job_name.clone()),
+            namespace: Some(namespace.clone()),
+            owner_references: Some(vec![
+                k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                    api_version: "jobfather.coolkev.com/v1".to_string(),
+                    kind: "JobTemplate".to_string(),
+                    name: name.clone(),
+                    uid: job_template.uid().unwrap_or_default(),
+                    controller: Some(true),
+                    block_owner_deletion: Some(true),
+                },
+            ]),
+            ..Default::default()
+        },
+        spec: Some(JobSpec {
+            template: PodTemplateSpec {
+                spec: Some(pod_template),
+                ..Default::default()
+            },
+            backoff_limit: Some(0),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let job_api: Api<Job> = Api::namespaced(client.get_ref().clone(), &namespace);
+    match job_api.create(&PostParams::default(), &job).await {
+        Ok(_) => {
+            log::info!("Created job {} in namespace {}", job_name, namespace);
+            HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .body(render_modal_result(true, &format!("Job {} created", job_name)))
+        }
+        Err(e) => {
+            log::error!("Failed to create job: {}", e);
+            HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .body(render_modal_result(false, &format!("Failed to create job: {}", e)))
+        }
+    }
+}
+
+fn render_modal_result(success: bool, message: &str) -> String {
+    let markup = html! {
+        dialog id="run-job-dialog" class="modal" open {
+            div class="modal-backdrop" onclick="this.closest('dialog').remove()" {}
+            div class="modal-content" {
+                div class="modal-header" {
+                    h3 {
+                        @if success { "Job Created" } @else { "Error" }
+                    }
+                    button class="modal-close" onclick="this.closest('dialog').remove()" { "x" }
+                }
+                div class="modal-body" {
+                    div class=(if success { "result-message result-success" } else { "result-message result-error" }) {
+                        (message)
+                    }
+                }
+                div class="modal-footer" {
+                    button type="button" class="btn btn-primary" onclick="this.closest('dialog').remove()" { "Close" }
+                }
+            }
+        }
+    };
+    markup.into_string()
+}
+
+fn describe_value_from(value_from: &serde_json::Value) -> String {
+    if let Some(secret) = value_from.get("secretKeyRef") {
+        let name = secret.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        let key = secret.get("key").and_then(|k| k.as_str()).unwrap_or("?");
+        return format!("secret: {}/{}", name, key);
+    }
+    if let Some(cm) = value_from.get("configMapKeyRef") {
+        let name = cm.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        let key = cm.get("key").and_then(|k| k.as_str()).unwrap_or("?");
+        return format!("configmap: {}/{}", name, key);
+    }
+    if value_from.get("fieldRef").is_some() {
+        let path = value_from
+            .get("fieldRef")
+            .and_then(|f| f.get("fieldPath"))
+            .and_then(|p| p.as_str())
+            .unwrap_or("?");
+        return format!("field: {}", path);
+    }
+    if value_from.get("resourceFieldRef").is_some() {
+        return "resourceField".to_string();
+    }
+    "ref".to_string()
 }
 
 fn job_status(job: &Job) -> (&str, &str) {

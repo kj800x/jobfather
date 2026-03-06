@@ -127,6 +127,12 @@ pub async fn job_template_detail_fragment(
                     }
                 }
                 div class="jt-info-row" {
+                    span class="jt-info-label" { "Cleanup After" }
+                    span class="jt-info-value" {
+                        code { (job_template.cleanup_after()) }
+                    }
+                }
+                div class="jt-info-row" {
                     span class="jt-info-label" { "Acceptance Test" }
                     span class="jt-info-value" {
                         @if job_template.is_acceptance_test() {
@@ -147,12 +153,10 @@ pub async fn job_template_detail_fragment(
             }
         }
 
-        // Live Jobs section
-        h3 class="section-title" { "Active Jobs" }
-        (render_live_jobs_table(&live_jobs))
+        h3 class="section-title" { "Live Jobs" }
+        (render_live_jobs_table(&live_jobs, &namespace))
 
-        // Archived Jobs section
-        h3 class="section-title" { "Job History" }
+        h3 class="section-title" { "Archived Jobs" }
         (render_archived_jobs_table(&archived_jobs))
     };
 
@@ -161,7 +165,7 @@ pub async fn job_template_detail_fragment(
         .body(markup.into_string())
 }
 
-fn render_live_jobs_table(jobs: &[Job]) -> Markup {
+fn render_live_jobs_table(jobs: &[Job], namespace: &str) -> Markup {
     html! {
         table class="jt-table" {
             thead {
@@ -176,14 +180,16 @@ fn render_live_jobs_table(jobs: &[Job]) -> Markup {
                 @if jobs.is_empty() {
                     tr {
                         td colspan="4" class="empty-state" {
-                            "No active jobs."
+                            "No live jobs."
                         }
                     }
                 }
                 @for job in jobs {
                     @let status = job_status(job);
                     tr {
-                        td class="jt-name" { (job.name_any()) }
+                        td class="jt-name" {
+                            a href=(format!("/jobs/{}/{}", namespace, job.name_any())) { (job.name_any()) }
+                        }
                         td {
                             span class=(format!("badge badge-{}", status.0)) { (status.1) }
                         }
@@ -224,7 +230,9 @@ fn render_archived_jobs_table(jobs: &[ArchivedJob]) -> Markup {
                 }
                 @for job in jobs {
                     tr {
-                        td class="jt-name" { (job.name) }
+                        td class="jt-name" {
+                            a href=(format!("/jobs/{}/{}", job.namespace, job.name)) { (&job.name) }
+                        }
                         td {
                             @let badge_class = match job.status.as_str() {
                                 "Succeeded" => "success",
@@ -459,9 +467,24 @@ pub async fn job_template_run(
     // Build the Job from the template's pod spec
     let mut pod_spec: serde_json::Value = job_template.spec.spec.clone();
 
-    // Override args and env on the first container
+    // Inject emptyDir volume for job output
+    if pod_spec.get("volumes").is_none() {
+        pod_spec["volumes"] = serde_json::json!([]);
+    }
+    if let Some(volumes) = pod_spec["volumes"].as_array_mut() {
+        volumes.push(serde_json::json!({"name": "job-output", "emptyDir": {}}));
+    }
+
+    // Override args and env on the first container, and add volume mount
     if let Some(containers) = pod_spec.get_mut("containers").and_then(|c| c.as_array_mut()) {
         if let Some(container) = containers.first_mut() {
+            // Add /job-output volume mount
+            if container.get("volumeMounts").is_none() {
+                container["volumeMounts"] = serde_json::json!([]);
+            }
+            if let Some(mounts) = container["volumeMounts"].as_array_mut() {
+                mounts.push(serde_json::json!({"name": "job-output", "mountPath": "/job-output"}));
+            }
             if !args.is_empty() || job_template.spec.spec.get("containers")
                 .and_then(|c| c.as_array())
                 .and_then(|a| a.first())
@@ -496,6 +519,39 @@ pub async fn job_template_run(
             }
 
             container["env"] = serde_json::to_value(&new_env).unwrap_or_default();
+        }
+    }
+
+    // Inject job-output sidecar container
+    let jobfather_url = std::env::var("JOBFATHER_URL")
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_string();
+    if !jobfather_url.is_empty() {
+        if pod_spec.get("initContainers").is_none() {
+            pod_spec["initContainers"] = serde_json::json!([]);
+        }
+        if let Some(init_containers) = pod_spec["initContainers"].as_array_mut() {
+            init_containers.push(serde_json::json!({
+                "name": "job-output-sidecar",
+                "image": "curlimages/curl:latest",
+                "restartPolicy": "Always",
+                "command": ["sh", "-c", concat!(
+                    "upload() { ",
+                    "for f in result.json report.md test-results.xml archive.tar.gz; do ",
+                    "[ -f \"/job-output/$f\" ] && curl -sf -X PUT --data-binary \"@/job-output/$f\" ",
+                    "\"$JOBFATHER_URL/api/jobs/$JOBFATHER_NAMESPACE/$JOBFATHER_JOB_NAME/output/$f\" || true; ",
+                    "done; exit 0; }; ",
+                    "trap upload TERM; ",
+                    "while true; do sleep 3600 & wait; done"
+                )],
+                "env": [
+                    {"name": "JOBFATHER_URL", "value": &jobfather_url},
+                    {"name": "JOBFATHER_NAMESPACE", "value": &namespace},
+                    {"name": "JOBFATHER_JOB_NAME", "valueFrom": {"fieldRef": {"fieldPath": "metadata.labels['job-name']"}}}
+                ],
+                "volumeMounts": [{"name": "job-output", "mountPath": "/job-output"}]
+            }));
         }
     }
 
@@ -615,7 +671,7 @@ fn describe_value_from(value_from: &serde_json::Value) -> String {
 fn job_status(job: &Job) -> (&str, &str) {
     let status = match job.status.as_ref() {
         Some(s) => s,
-        None => return ("muted", "Unknown"),
+        None => return ("muted", "Pending"),
     };
 
     if let Some(conditions) = &status.conditions {
@@ -630,7 +686,10 @@ fn job_status(job: &Job) -> (&str, &str) {
     }
 
     if status.active.is_some_and(|a| a > 0) {
-        return ("info", "Running");
+        if status.ready.is_some_and(|r| r > 0) {
+            return ("info", "Running");
+        }
+        return ("muted", "Pending");
     }
 
     ("muted", "Pending")

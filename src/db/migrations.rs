@@ -24,6 +24,26 @@ pub fn migrate(
                 archived_at TEXT NOT NULL DEFAULT (datetime('now'))
             )",
         ),
+        M::up(
+            "ALTER TABLE archived_job ADD COLUMN output_result_json TEXT;
+             ALTER TABLE archived_job ADD COLUMN output_report_md TEXT;
+             ALTER TABLE archived_job ADD COLUMN output_test_results_xml TEXT;
+             ALTER TABLE archived_job ADD COLUMN output_archive BLOB;",
+        ),
+        M::up(
+            "ALTER TABLE archived_job ADD COLUMN events_json TEXT;",
+        ),
+        M::up(
+            "CREATE TABLE IF NOT EXISTS job_output (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_name TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                content BLOB NOT NULL,
+                uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(job_name, namespace, file_name)
+            );",
+        ),
     ]);
 
     migrations.to_latest(&mut conn)?;

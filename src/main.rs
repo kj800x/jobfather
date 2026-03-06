@@ -56,6 +56,10 @@ async fn start_http(
             .service(web::job_template_detail_fragment)
             .service(web::job_template_run_modal)
             .service(web::job_template_run)
+            .service(web::job_detail_page)
+            .service(web::job_detail_fragment)
+            .service(web::job_output_archive)
+            .service(web::upload_job_output)
             .service(serve_static_file!("htmx.min.js"))
             .service(serve_static_file!("idiomorph.min.js"))
             .service(serve_static_file!("idiomorph-ext.min.js"))
@@ -72,6 +76,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .filter_module("kube_runtime::controller", log::LevelFilter::Warn)
+        .filter_module("actix_web::middleware::logger", log::LevelFilter::Warn)
         .parse_default_env()
         .init();
 
@@ -92,11 +97,18 @@ async fn main() -> std::io::Result<()> {
         db::migrations::migrate(conn).expect("Failed to run database migrations");
     }
 
+    let reconciler_client = kube::Client::try_default()
+        .await
+        .expect("Failed to initialize Kubernetes client for reconciler");
+
     tokio::select! {
-        result = start_http(registry, pool) => {
+        result = start_http(registry, pool.clone()) => {
             if let Err(e) = result {
                 log::error!("HTTP server error: {}", e);
             }
+        }
+        _ = kubernetes::reconciler::run(reconciler_client, pool) => {
+            log::error!("Reconciler exited unexpectedly");
         }
     };
 

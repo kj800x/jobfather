@@ -58,13 +58,14 @@ pub async fn job_templates_fragment(
                     th { "Name" }
                     th { "Namespace" }
                     th { "Schedule" }
+                    th { "Cleanup After" }
                     th { "Acceptance Test" }
                 }
             }
             tbody {
                 @if job_templates.is_empty() {
                     tr {
-                        td colspan="4" class="empty-state" {
+                        td colspan="5" class="empty-state" {
                             "No JobTemplates found in the cluster."
                         }
                     }
@@ -83,6 +84,9 @@ pub async fn job_templates_fragment(
                             } @else {
                                 span class="text-muted" { "On-demand" }
                             }
+                        }
+                        td {
+                            code { (jt.cleanup_after()) }
                         }
                         td {
                             @if jt.is_acceptance_test() {

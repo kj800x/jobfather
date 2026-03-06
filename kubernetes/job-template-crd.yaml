@@ -21,6 +21,9 @@ spec:
                 acceptanceTest:
                   type: boolean
                   description: "Whether the job is an acceptance test"
+                cleanupAfter:
+                  type: string
+                  description: "Duration after which completed jobs are cleaned up (e.g. '1h30m', '7d', '30m')"
                 spec:
                   type: object
                   description: "PodSpec for the job pod"
@@ -35,6 +38,9 @@ spec:
         - name: Acceptance Test
           jsonPath: .spec.acceptanceTest
           type: boolean
+        - name: Cleanup After
+          jsonPath: .spec.cleanupAfter
+          type: string
         - name: Age
           jsonPath: .metadata.creationTimestamp
           type: date

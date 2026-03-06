@@ -68,79 +68,17 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
     let mut text_buf = String::new();
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                let local_name = e.local_name();
-                match local_name.as_ref() {
-                    b"testsuite" => {
-                        let mut suite = TestSuite::default();
-                        for attr in e.attributes().flatten() {
-                            match attr.key.as_ref() {
-                                b"name" => suite.name = String::from_utf8_lossy(&attr.value).into(),
-                                b"tests" => suite.tests = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                                b"failures" => suite.failures = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                                b"errors" => suite.errors = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                                b"skipped" => suite.skipped = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                                b"time" => suite.time = Some(String::from_utf8_lossy(&attr.value).into()),
-                                _ => {}
-                            }
-                        }
-                        current_suite = Some(suite);
-                    }
-                    b"testcase" => {
-                        let mut tc = TestCase {
-                            name: String::new(),
-                            classname: None,
-                            time: None,
-                            status: TestCaseStatus::Passed,
-                        };
-                        for attr in e.attributes().flatten() {
-                            match attr.key.as_ref() {
-                                b"name" => tc.name = String::from_utf8_lossy(&attr.value).into(),
-                                b"classname" => tc.classname = Some(String::from_utf8_lossy(&attr.value).into()),
-                                b"time" => tc.time = Some(String::from_utf8_lossy(&attr.value).into()),
-                                _ => {}
-                            }
-                        }
-                        current_case = Some(tc);
-                    }
-                    b"failure" => {
-                        let msg = e.attributes().flatten()
-                            .find(|a| a.key.as_ref() == b"message")
-                            .map(|a| String::from_utf8_lossy(&a.value).into());
-                        if let Some(ref mut tc) = current_case {
-                            tc.status = TestCaseStatus::Failed { message: msg, body: None };
-                        }
-                        in_failure = true;
-                        text_buf.clear();
-                    }
-                    b"error" => {
-                        let msg = e.attributes().flatten()
-                            .find(|a| a.key.as_ref() == b"message")
-                            .map(|a| String::from_utf8_lossy(&a.value).into());
-                        if let Some(ref mut tc) = current_case {
-                            tc.status = TestCaseStatus::Error { message: msg, body: None };
-                        }
-                        in_error = true;
-                        text_buf.clear();
-                    }
-                    b"skipped" => {
-                        let msg = e.attributes().flatten()
-                            .find(|a| a.key.as_ref() == b"message")
-                            .map(|a| String::from_utf8_lossy(&a.value).into());
-                        if let Some(ref mut tc) = current_case {
-                            tc.status = TestCaseStatus::Skipped { message: msg };
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Text(e)) => {
+        let event = reader.read_event();
+        let (e, is_empty) = match &event {
+            Ok(Event::Start(e)) => (e, false),
+            Ok(Event::Empty(e)) => (e, true),
+            Ok(Event::Text(t)) => {
                 if in_failure || in_error {
-                    if let Ok(t) = e.unescape() {
-                        text_buf.push_str(&t);
+                    if let Ok(txt) = t.unescape() {
+                        text_buf.push_str(&txt);
                     }
                 }
+                continue;
             }
             Ok(Event::End(e)) => {
                 match e.local_name().as_ref() {
@@ -178,9 +116,81 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
                     }
                     _ => {}
                 }
+                continue;
             }
             Ok(Event::Eof) => break,
             Err(_) => return None,
+            _ => continue,
+        };
+
+        match e.local_name().as_ref() {
+            b"testsuite" => {
+                let mut suite = TestSuite::default();
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"name" => suite.name = String::from_utf8_lossy(&attr.value).into(),
+                        b"tests" => suite.tests = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
+                        b"failures" => suite.failures = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
+                        b"errors" => suite.errors = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
+                        b"skipped" => suite.skipped = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
+                        b"time" => suite.time = Some(String::from_utf8_lossy(&attr.value).into()),
+                        _ => {}
+                    }
+                }
+                current_suite = Some(suite);
+            }
+            b"testcase" => {
+                let mut tc = TestCase {
+                    name: String::new(),
+                    classname: None,
+                    time: None,
+                    status: TestCaseStatus::Passed,
+                };
+                for attr in e.attributes().flatten() {
+                    match attr.key.as_ref() {
+                        b"name" => tc.name = String::from_utf8_lossy(&attr.value).into(),
+                        b"classname" => tc.classname = Some(String::from_utf8_lossy(&attr.value).into()),
+                        b"time" => tc.time = Some(String::from_utf8_lossy(&attr.value).into()),
+                        _ => {}
+                    }
+                }
+                if is_empty {
+                    // Self-closing <testcase .../> — add directly to suite
+                    if let Some(ref mut suite) = current_suite {
+                        suite.cases.push(tc);
+                    }
+                } else {
+                    current_case = Some(tc);
+                }
+            }
+            b"failure" => {
+                let msg = e.attributes().flatten()
+                    .find(|a| a.key.as_ref() == b"message")
+                    .map(|a| String::from_utf8_lossy(&a.value).into());
+                if let Some(ref mut tc) = current_case {
+                    tc.status = TestCaseStatus::Failed { message: msg, body: None };
+                }
+                in_failure = !is_empty;
+                text_buf.clear();
+            }
+            b"error" => {
+                let msg = e.attributes().flatten()
+                    .find(|a| a.key.as_ref() == b"message")
+                    .map(|a| String::from_utf8_lossy(&a.value).into());
+                if let Some(ref mut tc) = current_case {
+                    tc.status = TestCaseStatus::Error { message: msg, body: None };
+                }
+                in_error = !is_empty;
+                text_buf.clear();
+            }
+            b"skipped" => {
+                let msg = e.attributes().flatten()
+                    .find(|a| a.key.as_ref() == b"message")
+                    .map(|a| String::from_utf8_lossy(&a.value).into());
+                if let Some(ref mut tc) = current_case {
+                    tc.status = TestCaseStatus::Skipped { message: msg };
+                }
+            }
             _ => {}
         }
     }

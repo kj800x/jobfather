@@ -330,6 +330,18 @@ fn render_output_sections(output: &JobOutput, namespace: &str, job_name: &str) -
     html! {
         h3 class="section-title" { "Job Output" }
 
+        // Test results first — they're the most important output type
+        @if let Some(xml) = &output.test_results_xml {
+            div class="output-section" {
+                @if let Some(suites) = super::junit::parse_junit_xml(xml) {
+                    (super::junit::render_test_results(&suites))
+                } @else {
+                    div class="output-section-header" { "test-results.xml" }
+                    pre class="output-viewer output-xml" { (xml) }
+                }
+            }
+        }
+
         @if let Some(json) = &output.result_json {
             div class="output-section" {
                 div class="output-section-header" { "result.json" }
@@ -343,13 +355,6 @@ fn render_output_sections(output: &JobOutput, namespace: &str, job_name: &str) -
                 div class="output-viewer output-markdown" {
                     pre { (md) }
                 }
-            }
-        }
-
-        @if let Some(xml) = &output.test_results_xml {
-            div class="output-section" {
-                div class="output-section-header" { "test-results.xml" }
-                pre class="output-viewer output-xml" { (xml) }
             }
         }
 

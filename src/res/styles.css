@@ -540,3 +540,141 @@ textarea.form-control {
 .event-warning {
   background-color: #fff8e1;
 }
+
+/* Test results */
+.test-summary-bar {
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.test-summary-pass {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.test-summary-fail {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.test-summary-icon {
+  margin-right: 4px;
+}
+
+.test-summary-skipped {
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.test-suite {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.test-suite-header {
+  background: var(--card-bg);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.test-suite-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.test-suite-stats {
+  font-size: 12px;
+  color: var(--secondary-text);
+}
+
+.test-case {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.test-case:last-child {
+  border-bottom: none;
+}
+
+.test-case-header {
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.test-case-icon {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.test-case-passed .test-case-icon {
+  color: #16a34a;
+}
+
+.test-case-failed .test-case-icon {
+  color: #dc2626;
+}
+
+.test-case-skipped .test-case-icon {
+  color: var(--secondary-text);
+}
+
+.test-case-name {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+}
+
+.test-case-classname {
+  color: var(--secondary-text);
+}
+
+.test-case-time {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--secondary-text);
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+}
+
+.test-case-detail {
+  padding: 0 16px 10px 42px;
+}
+
+.test-case-message {
+  font-size: 12px;
+  color: #991b1b;
+  margin-bottom: 6px;
+}
+
+.test-case-body {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 10px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+}
+
+.test-case-failed {
+  background: #fef8f8;
+}

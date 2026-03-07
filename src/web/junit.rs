@@ -207,77 +207,55 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
     }
 }
 
-pub fn render_test_results(suites: &TestSuites) -> Markup {
-    let total = suites.total_tests();
-    let failed = suites.total_failures();
-    let errors = suites.total_errors();
-    let skipped = suites.total_skipped();
-
+pub fn render_test_suite(suite: &TestSuite) -> Markup {
     html! {
-        div class="test-summary" {
-            div class=(if suites.all_passed() { "test-summary-bar test-summary-pass" } else { "test-summary-bar test-summary-fail" }) {
-                @if suites.all_passed() {
-                    span class="test-summary-icon" { "\u{2713}" }
-                    " All " (total) " tests passed"
-                } @else {
-                    span class="test-summary-icon" { "\u{2717}" }
-                    " " (failed + errors) " of " (total) " tests failed"
-                }
-                @if skipped > 0 {
-                    span class="test-summary-skipped" { " (" (skipped) " skipped)" }
-                }
-            }
-        }
-
-        @for suite in &suites.suites {
-            div class="test-suite" {
-                div class="test-suite-header" {
-                    span class="test-suite-name" { (&suite.name) }
-                    span class="test-suite-stats" {
-                        (suite.tests) " tests"
-                        @if let Some(t) = &suite.time {
-                            " \u{00b7} " (t) "s"
-                        }
+        div class="test-suite" {
+            div class="test-suite-header" {
+                span class="test-suite-name" { (&suite.name) }
+                span class="test-suite-stats" {
+                    (suite.tests) " tests"
+                    @if let Some(t) = &suite.time {
+                        " \u{00b7} " (t) "s"
                     }
                 }
-                @for tc in &suite.cases {
-                    @let (icon, row_class) = match &tc.status {
-                        TestCaseStatus::Passed => ("\u{2713}", "test-case test-case-passed"),
-                        TestCaseStatus::Failed { .. } => ("\u{2717}", "test-case test-case-failed"),
-                        TestCaseStatus::Error { .. } => ("\u{2717}", "test-case test-case-failed"),
-                        TestCaseStatus::Skipped { .. } => ("\u{2014}", "test-case test-case-skipped"),
-                    };
-                    div class=(row_class) {
-                        div class="test-case-header" {
-                            span class="test-case-icon" { (icon) }
-                            span class="test-case-name" {
-                                @if let Some(cn) = &tc.classname {
-                                    span class="test-case-classname" { (cn) " \u{203a} " }
-                                }
-                                (&tc.name)
+            }
+            @for tc in &suite.cases {
+                @let (icon, row_class) = match &tc.status {
+                    TestCaseStatus::Passed => ("\u{2713}", "test-case test-case-passed"),
+                    TestCaseStatus::Failed { .. } => ("\u{2717}", "test-case test-case-failed"),
+                    TestCaseStatus::Error { .. } => ("\u{2717}", "test-case test-case-failed"),
+                    TestCaseStatus::Skipped { .. } => ("\u{2014}", "test-case test-case-skipped"),
+                };
+                div class=(row_class) {
+                    div class="test-case-header" {
+                        span class="test-case-icon" { (icon) }
+                        span class="test-case-name" {
+                            @if let Some(cn) = &tc.classname {
+                                span class="test-case-classname" { (cn) " \u{203a} " }
                             }
-                            @if let Some(t) = &tc.time {
-                                span class="test-case-time" { (t) "s" }
-                            }
+                            (&tc.name)
                         }
-                        @match &tc.status {
-                            TestCaseStatus::Failed { message, body } | TestCaseStatus::Error { message, body } => {
-                                div class="test-case-detail" {
-                                    @if let Some(msg) = message {
-                                        div class="test-case-message" { (msg) }
-                                    }
-                                    @if let Some(b) = body {
-                                        pre class="test-case-body" { (b) }
-                                    }
-                                }
-                            }
-                            TestCaseStatus::Skipped { message: Some(msg) } => {
-                                div class="test-case-detail" {
+                        @if let Some(t) = &tc.time {
+                            span class="test-case-time" { (t) "s" }
+                        }
+                    }
+                    @match &tc.status {
+                        TestCaseStatus::Failed { message, body } | TestCaseStatus::Error { message, body } => {
+                            div class="test-case-detail" {
+                                @if let Some(msg) = message {
                                     div class="test-case-message" { (msg) }
                                 }
+                                @if let Some(b) = body {
+                                    pre class="test-case-body" { (b) }
+                                }
                             }
-                            _ => {}
                         }
+                        TestCaseStatus::Skipped { message: Some(msg) } => {
+                            div class="test-case-detail" {
+                                div class="test-case-message" { (msg) }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

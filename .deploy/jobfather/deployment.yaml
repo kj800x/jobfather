@@ -23,7 +23,7 @@ spec:
             - name: DATABASE_PATH
               value: /data/db.db
             - name: JOBFATHER_URL
-              value: http://jobs.home.coolkev.com
+              value: https://jobs.home.coolkev.com
           image: ghcr.io/kj800x/jobfather:commit-$SHA
           name: jobfather
           ports:

@@ -28,8 +28,8 @@ pub fn build_job(
     }
 
     // Modify the first container: add volume mount, optionally override args and env
-    if let Some(containers) = pod_spec.get_mut("containers").and_then(|c| c.as_array_mut()) {
-        if let Some(container) = containers.first_mut() {
+    if let Some(containers) = pod_spec.get_mut("containers").and_then(|c| c.as_array_mut())
+        && let Some(container) = containers.first_mut() {
             // Add /job-output volume mount
             if container.get("volumeMounts").is_none() {
                 container["volumeMounts"] = serde_json::json!([]);
@@ -41,8 +41,8 @@ pub fn build_job(
             }
 
             // Override args if provided
-            if let Some(ref override_args) = args {
-                if !override_args.is_empty()
+            if let Some(ref override_args) = args
+                && (!override_args.is_empty()
                     || job_template
                         .spec
                         .spec
@@ -50,12 +50,11 @@ pub fn build_job(
                         .and_then(|c| c.as_array())
                         .and_then(|a| a.first())
                         .and_then(|c| c.get("args"))
-                        .is_some()
+                        .is_some())
                 {
                     container["args"] =
                         serde_json::to_value(override_args).unwrap_or_default();
                 }
-            }
 
             // Override env if provided
             if let Some(ref override_env) = env {
@@ -85,7 +84,6 @@ pub fn build_job(
                 container["env"] = serde_json::to_value(&new_env).unwrap_or_default();
             }
         }
-    }
 
     // Inject job-output sidecar container
     let jobfather_url = std::env::var("JOBFATHER_URL")

@@ -69,41 +69,35 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
             Ok(Event::Start(e)) => (e, false),
             Ok(Event::Empty(e)) => (e, true),
             Ok(Event::Text(t)) => {
-                if in_failure || in_error {
-                    if let Ok(txt) = t.unescape() {
+                if (in_failure || in_error)
+                    && let Ok(txt) = t.unescape() {
                         text_buf.push_str(&txt);
                     }
-                }
                 continue;
             }
             Ok(Event::End(e)) => {
                 match e.local_name().as_ref() {
                     b"failure" => {
-                        if let Some(ref mut tc) = current_case {
-                            if let TestCaseStatus::Failed { ref mut body, .. } = tc.status {
-                                if !text_buf.is_empty() {
+                        if let Some(ref mut tc) = current_case
+                            && let TestCaseStatus::Failed { ref mut body, .. } = tc.status
+                                && !text_buf.is_empty() {
                                     *body = Some(text_buf.clone());
                                 }
-                            }
-                        }
                         in_failure = false;
                     }
                     b"error" => {
-                        if let Some(ref mut tc) = current_case {
-                            if let TestCaseStatus::Error { ref mut body, .. } = tc.status {
-                                if !text_buf.is_empty() {
+                        if let Some(ref mut tc) = current_case
+                            && let TestCaseStatus::Error { ref mut body, .. } = tc.status
+                                && !text_buf.is_empty() {
                                     *body = Some(text_buf.clone());
                                 }
-                            }
-                        }
                         in_error = false;
                     }
                     b"testcase" => {
-                        if let Some(tc) = current_case.take() {
-                            if let Some(ref mut suite) = current_suite {
+                        if let Some(tc) = current_case.take()
+                            && let Some(ref mut suite) = current_suite {
                                 suite.cases.push(tc);
                             }
-                        }
                     }
                     b"testsuite" => {
                         if let Some(suite) = current_suite.take() {

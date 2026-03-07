@@ -285,8 +285,8 @@ impl Metrics {
             "SELECT job_template_name, job_template_namespace, MAX(completion_time)
              FROM archived_job
              GROUP BY job_template_name, job_template_namespace",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
+        )
+            && let Ok(rows) = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -294,22 +294,20 @@ impl Metrics {
                 ))
             }) {
                 for row in rows.flatten() {
-                    if let Some(time_str) = row.2 {
-                        if let Ok(time) = time_str.parse::<DateTime<Utc>>() {
+                    if let Some(time_str) = row.2
+                        && let Ok(time) = time_str.parse::<DateTime<Utc>>() {
                             last_completion.insert((row.0, row.1), time);
                         }
-                    }
                 }
             }
-        }
 
         if let Ok(mut stmt) = conn.prepare(
             "SELECT job_template_name, job_template_namespace, MAX(completion_time)
              FROM archived_job
              WHERE status = 'Succeeded'
              GROUP BY job_template_name, job_template_namespace",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
+        )
+            && let Ok(rows) = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -317,14 +315,12 @@ impl Metrics {
                 ))
             }) {
                 for row in rows.flatten() {
-                    if let Some(time_str) = row.2 {
-                        if let Ok(time) = time_str.parse::<DateTime<Utc>>() {
+                    if let Some(time_str) = row.2
+                        && let Ok(time) = time_str.parse::<DateTime<Utc>>() {
                             last_success.insert((row.0, row.1), time);
                         }
-                    }
                 }
             }
-        }
 
         // Also check live K8s jobs for completion times not yet archived
         let job_api: Api<Job> = Api::all(client.clone());
@@ -489,13 +485,12 @@ impl Metrics {
 
         for suite in &suites.suites {
             for case in &suite.cases {
-                if let Some(time_str) = &case.time {
-                    if let Ok(duration) = time_str.parse::<f64>() {
+                if let Some(time_str) = &case.time
+                    && let Ok(duration) = time_str.parse::<f64>() {
                         self.test_case_duration_seconds
                             .with_label_values(&[jt_namespace, jt_name, &suite.name, &case.name])
                             .set(duration);
                     }
-                }
             }
         }
     }
@@ -528,11 +523,10 @@ fn is_acceptance_failure(
     }
 
     // Snapshots differ from baseline (and not accepted)
-    if let Some(ss) = snapshot_status {
-        if ss == "differs_from_baseline" {
+    if let Some(ss) = snapshot_status
+        && ss == "differs_from_baseline" {
             return true;
         }
-    }
 
     false
 }

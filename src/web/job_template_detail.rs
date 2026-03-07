@@ -188,7 +188,7 @@ pub async fn job_template_detail_fragment(
         let test_results = if is_acceptance_test {
             job.output_test_results_xml
                 .as_deref()
-                .and_then(|xml| super::junit::parse_junit_xml(xml))
+                .and_then(super::junit::parse_junit_xml)
                 .map(|suites| TestResultSummary {
                     all_passed: suites.all_passed(),
                     failures: suites.total_failures() + suites.total_errors(),

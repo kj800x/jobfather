@@ -240,11 +240,10 @@ fn terminal_time(job: &Job) -> Option<chrono::DateTime<Utc>> {
     // For failed jobs, look at conditions
     if let Some(conditions) = &status.conditions {
         for c in conditions {
-            if c.type_ == "Failed" && c.status == "True" {
-                if let Some(t) = &c.last_transition_time {
+            if c.type_ == "Failed" && c.status == "True"
+                && let Some(t) = &c.last_transition_time {
                     return Some(t.0);
                 }
-            }
         }
     }
 

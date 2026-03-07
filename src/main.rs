@@ -62,7 +62,7 @@ async fn start_http(
         }
         Err(e) => {
             log::error!("Failed to initialize Kubernetes client: {}", e);
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+            return Err(std::io::Error::other(e));
         }
     };
 

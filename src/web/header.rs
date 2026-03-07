@@ -20,6 +20,7 @@ pub fn render(active_page: &str) -> Markup {
 
 pub fn stylesheet_link() -> Markup {
     html! {
+        meta name="viewport" content="width=device-width, initial-scale=1";
         link rel="stylesheet" href="/res/styles.css";
     }
 }
@@ -29,5 +30,20 @@ pub fn scripts() -> Markup {
         script src="/res/htmx.min.js" {}
         script src="/res/idiomorph.min.js" {}
         script src="/res/idiomorph-ext.min.js" {}
+        script {
+            (maud::PreEscaped(r#"
+Idiomorph.defaults.callbacks.beforeAttributeUpdated = function(name, node) { return !(name === 'open' && node.tagName === 'DETAILS'); };
+document.addEventListener('click', function(e) {
+    var el = e.target.closest('[data-sha]');
+    if (!el) return;
+    var sha = el.getAttribute('data-sha');
+    navigator.clipboard.writeText(sha).then(function() {
+        var orig = el.textContent;
+        el.textContent = 'Copied!';
+        setTimeout(function() { el.textContent = orig; }, 1000);
+    });
+});
+            "#))
+        }
     }
 }

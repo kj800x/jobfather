@@ -1,5 +1,6 @@
 mod db;
 mod kubernetes;
+mod snapshot;
 mod web;
 
 use actix_web::{get, middleware, web::Data, App, HttpResponse, HttpServer, Responder};
@@ -59,6 +60,11 @@ async fn start_http(
             .service(web::job_detail_page)
             .service(web::job_detail_fragment)
             .service(web::job_output_archive)
+            .service(web::job_output_test_snapshots)
+            .service(web::accept_snapshots)
+            .service(web::job_snapshot_file)
+            .service(web::baseline_snapshot_file)
+            .service(web::baseline_set_file)
             .service(web::upload_job_output)
             .service(serve_static_file!("htmx.min.js"))
             .service(serve_static_file!("idiomorph.min.js"))

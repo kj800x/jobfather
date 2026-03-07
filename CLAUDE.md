@@ -16,6 +16,7 @@ Every job gets an `emptyDir` mounted at `/job-output`. Supported files:
 - `/job-output/report.md` — human-readable markdown report
 - `/job-output/test-results.xml` — JUnit XML test results
 - `/job-output/archive.tar.gz` — escape hatch for arbitrary files
+- `/job-output/test-snapshots/` — directory of snapshot files; automatically tarred and uploaded as `test-snapshots.tar.gz`
 
 Files are uploaded by a sidecar container (`curlimages/curl`) that receives SIGTERM when the main container exits, then PUTs files to Jobfather's API. Requires `JOBFATHER_URL` env var to be set on the Jobfather deployment.
 

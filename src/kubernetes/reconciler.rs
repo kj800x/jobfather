@@ -113,6 +113,26 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         .and_then(|s| s.start_time.as_ref())
         .map(|t| (completion_time - t.0).num_seconds());
 
+    // Read snapshot status computed at upload time (not recomputed here)
+    let (snapshot_status, snapshot_diff_json, snapshot_baseline_id) = match ctx.pool.get() {
+        Ok(conn) => {
+            let status = crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_status", &conn);
+            let diff = crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_diff_json", &conn);
+            let baseline_id = crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_baseline_id", &conn)
+                .and_then(|s| s.parse::<i64>().ok());
+            (status, diff, baseline_id)
+        }
+        Err(_) => (None, None, None),
+    };
+
+    let annotations = job.metadata.annotations.as_ref();
+    let artifact_sha = annotations
+        .and_then(|a| a.get("artifactSha"))
+        .cloned();
+    let config_sha = annotations
+        .and_then(|a| a.get("configSha"))
+        .cloned();
+
     let egg = ArchivedJobEgg {
         name: job_name.clone(),
         namespace: namespace.clone(),
@@ -128,7 +148,13 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         output_report_md: output.report_md,
         output_test_results_xml: output.test_results_xml,
         output_archive: output.archive,
+        output_test_snapshots: output.test_snapshots,
         events_json: serde_json::to_string(&events).ok(),
+        snapshot_status,
+        snapshot_diff_json,
+        artifact_sha,
+        config_sha,
+        snapshot_baseline_id,
     };
 
     // Archive to database

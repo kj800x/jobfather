@@ -7,6 +7,7 @@ const VALID_FILES: &[&str] = &[
     "report.md",
     "test-results.xml",
     "archive.tar.gz",
+    "test-snapshots.tar.gz",
 ];
 
 pub fn is_valid_file(name: &str) -> bool {
@@ -61,6 +62,18 @@ pub fn get_all(
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
     })?;
     rows.collect()
+}
+
+pub fn get_string(
+    job_name: &str,
+    namespace: &str,
+    file_name: &str,
+    conn: &PooledConnection<SqliteConnectionManager>,
+) -> Option<String> {
+    get(job_name, namespace, file_name, conn)
+        .ok()
+        .flatten()
+        .and_then(|b| String::from_utf8(b).ok())
 }
 
 pub fn delete_for_job(

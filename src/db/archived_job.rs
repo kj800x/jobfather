@@ -7,7 +7,8 @@ const SELECT_COLUMNS: &str =
     "id, name, namespace, job_template_name, job_template_namespace,
      uid, status, start_time, completion_time, duration_seconds, logs, archived_at,
      output_result_json, output_report_md, output_test_results_xml, output_archive,
-     events_json";
+     output_test_snapshots, events_json, snapshot_status, snapshot_diff_json,
+     artifact_sha, config_sha, snapshot_baseline_id";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ArchivedJob {
@@ -28,7 +29,14 @@ pub struct ArchivedJob {
     pub output_test_results_xml: Option<String>,
     #[serde(skip)]
     pub output_archive: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub output_test_snapshots: Option<Vec<u8>>,
     pub events_json: Option<String>,
+    pub snapshot_status: Option<String>,
+    pub snapshot_diff_json: Option<String>,
+    pub artifact_sha: Option<String>,
+    pub config_sha: Option<String>,
+    pub snapshot_baseline_id: Option<i64>,
 }
 
 pub struct ArchivedJobEgg {
@@ -46,7 +54,13 @@ pub struct ArchivedJobEgg {
     pub output_report_md: Option<String>,
     pub output_test_results_xml: Option<String>,
     pub output_archive: Option<Vec<u8>>,
+    pub output_test_snapshots: Option<Vec<u8>>,
     pub events_json: Option<String>,
+    pub snapshot_status: Option<String>,
+    pub snapshot_diff_json: Option<String>,
+    pub artifact_sha: Option<String>,
+    pub config_sha: Option<String>,
+    pub snapshot_baseline_id: Option<i64>,
 }
 
 impl ArchivedJob {
@@ -68,7 +82,13 @@ impl ArchivedJob {
             output_report_md: row.get(13)?,
             output_test_results_xml: row.get(14)?,
             output_archive: row.get(15)?,
-            events_json: row.get(16)?,
+            output_test_snapshots: row.get(16)?,
+            events_json: row.get(17)?,
+            snapshot_status: row.get(18)?,
+            snapshot_diff_json: row.get(19)?,
+            artifact_sha: row.get(20)?,
+            config_sha: row.get(21)?,
+            snapshot_baseline_id: row.get(22)?,
         })
     }
 
@@ -77,6 +97,7 @@ impl ArchivedJob {
             || self.output_report_md.is_some()
             || self.output_test_results_xml.is_some()
             || self.output_archive.is_some()
+            || self.output_test_snapshots.is_some()
     }
 
     pub fn get_by_job_template(
@@ -122,8 +143,9 @@ impl ArchivedJob {
                 (name, namespace, job_template_name, job_template_namespace,
                  uid, status, start_time, completion_time, duration_seconds, logs,
                  output_result_json, output_report_md, output_test_results_xml, output_archive,
-                 events_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 output_test_snapshots, events_json, snapshot_status, snapshot_diff_json,
+                 artifact_sha, config_sha, snapshot_baseline_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
              ON CONFLICT(uid) DO UPDATE SET
                 status = excluded.status,
                 completion_time = excluded.completion_time,
@@ -133,7 +155,25 @@ impl ArchivedJob {
                 output_report_md = excluded.output_report_md,
                 output_test_results_xml = excluded.output_test_results_xml,
                 output_archive = excluded.output_archive,
-                events_json = excluded.events_json",
+                output_test_snapshots = excluded.output_test_snapshots,
+                events_json = excluded.events_json,
+                snapshot_status = CASE
+                    WHEN archived_job.snapshot_status = 'accepted_as_baseline'
+                    THEN archived_job.snapshot_status
+                    ELSE excluded.snapshot_status
+                    END,
+                snapshot_diff_json = CASE
+                    WHEN archived_job.snapshot_status = 'accepted_as_baseline'
+                    THEN archived_job.snapshot_diff_json
+                    ELSE excluded.snapshot_diff_json
+                    END,
+                artifact_sha = excluded.artifact_sha,
+                config_sha = excluded.config_sha,
+                snapshot_baseline_id = CASE
+                    WHEN archived_job.snapshot_baseline_id IS NOT NULL
+                    THEN archived_job.snapshot_baseline_id
+                    ELSE excluded.snapshot_baseline_id
+                    END",
             params![
                 egg.name,
                 egg.namespace,
@@ -149,7 +189,13 @@ impl ArchivedJob {
                 egg.output_report_md,
                 egg.output_test_results_xml,
                 egg.output_archive,
+                egg.output_test_snapshots,
                 egg.events_json,
+                egg.snapshot_status,
+                egg.snapshot_diff_json,
+                egg.artifact_sha,
+                egg.config_sha,
+                egg.snapshot_baseline_id,
             ],
         )?;
         Ok(())

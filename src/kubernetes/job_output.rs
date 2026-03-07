@@ -8,6 +8,7 @@ pub struct JobOutput {
     pub report_md: Option<String>,
     pub test_results_xml: Option<String>,
     pub archive: Option<Vec<u8>>,
+    pub test_snapshots: Option<Vec<u8>>,
 }
 
 impl JobOutput {
@@ -17,6 +18,7 @@ impl JobOutput {
             report_md: None,
             test_results_xml: None,
             archive: None,
+            test_snapshots: None,
         }
     }
 
@@ -25,6 +27,7 @@ impl JobOutput {
             || self.report_md.is_some()
             || self.test_results_xml.is_some()
             || self.archive.is_some()
+            || self.test_snapshots.is_some()
     }
 
     /// Load job output from the job_output table (uploaded by sidecar).
@@ -50,6 +53,7 @@ impl JobOutput {
                 "report.md" => output.report_md = String::from_utf8(content).ok(),
                 "test-results.xml" => output.test_results_xml = String::from_utf8(content).ok(),
                 "archive.tar.gz" => output.archive = Some(content),
+                "test-snapshots.tar.gz" => output.test_snapshots = Some(content),
                 _ => {}
             }
         }

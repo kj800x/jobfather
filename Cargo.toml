@@ -25,5 +25,9 @@ r2d2_sqlite = "0.25"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rusqlite_migration = "1"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 futures = "0.3"
 quick-xml = "0.37"
+tar = "0.4"
+flate2 = "1"
+similar = "2"

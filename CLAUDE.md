@@ -20,11 +20,38 @@ Every job gets an `emptyDir` mounted at `/job-output`. Supported files:
 
 Files are uploaded by a sidecar container (`curlimages/curl`) that receives SIGTERM when the main container exits, then PUTs files to Jobfather's API. Requires `JOBFATHER_URL` env var to be set on the Jobfather deployment.
 
+## Snapshots
+
+Acceptance test jobs can write files to `/job-output/test-snapshots/`. On upload, Jobfather compares them against the latest baseline and records a diff status. Users can accept new snapshots as baseline from the UI, which versions the baseline set. Snapshot diffs for JSON files are displayed as unified diffs in the job detail page.
+
+## Scheduling
+
+JobTemplates with a `schedule` field are automatically run by the scheduler. Supports:
+- Cron expressions (e.g. `*/5 * * * *`)
+- Keywords: `hourly`, `daily`, `weekly`, `monthly` — resolved to deterministic cron times via MD5 hash of `namespace/name`
+
+The scheduler polls every 30 seconds, checks the last run time (from both live K8s jobs and archived DB), and creates a new job if the schedule is due.
+
+## Metrics
+
+Prometheus metrics are served at `/api/metrics`. Key metrics:
+- `jobfather_job_duration_seconds` — histogram of completed job durations
+- `jobfather_job_completions_total` — counter by namespace/template/status
+- `jobfather_job_longest_running_seconds` — gauge per template
+- `jobfather_time_since_last_completion_seconds` / `..._success_seconds` — gauges updated at scrape time
+- `jobfather_acceptance_consecutive_failures` — gauge for acceptance test templates
+- `jobfather_test_case_duration_seconds` — gauge per test case from JUnit XML
+- `jobfather_scheduler_tick_duration_seconds` — histogram of scheduler loop iterations
+- `jobfather_reconciler_tracked_jobs` — gauge of UIDs in the reconciler's metrics tracking set
+
 ## Project structure
 
-- `src/main.rs` — entrypoint, runs web server and reconciler concurrently
-- `src/kubernetes/` — CRD types (`JobTemplate`), reconciler, and job output collection
-- `src/web/` — actix-web routes and maud templates
-- `src/db/` — SQLite schema, migrations, and `ArchivedJob` model
-- `src/res/` — static assets (CSS, JS)
+- `src/main.rs` — entrypoint, runs web server, reconciler, and scheduler concurrently via `tokio::select!`
+- `src/kubernetes/` — CRD types (`JobTemplate`), reconciler, scheduler, job creation, event fetching, job output collection
+- `src/web/` — actix-web routes and maud templates (job templates list, job template detail, job detail, snapshot API, job output API)
+- `src/db/` — SQLite schema, migrations, `ArchivedJob` model, job output temp storage, snapshot baselines
+- `src/metrics.rs` — Prometheus metric definitions and update logic
+- `src/snapshot.rs` — tarball extraction, baseline comparison, JSON diffing
+- `src/lib.rs` — static file serving macro
+- `src/res/` — static assets (CSS, JS: htmx, idiomorph)
 - `kubernetes/` — CRD YAML and example manifests

@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  labels:
+    app.kubernetes.io/instance: jobfather
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: jobs.home.coolkev.com
+    traefik.ingress.kubernetes.io/router.tls.certresolver: letsencrypt
+  name: jobfather
+  namespace: cicd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: jobs.home.coolkev.com
+      http:
+        paths:
+          - backend:
+              service:
+                name: jobfather
+                port:
+                  number: 80
+            path: /
+            pathType: Prefix

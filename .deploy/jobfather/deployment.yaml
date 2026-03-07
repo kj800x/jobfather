@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: jobfather
+  name: jobfather
+  namespace: cicd
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: jobfather
+  template:
+    metadata:
+      labels:
+        app: jobfather
+    spec:
+      containers:
+        - command:
+            - jobfather
+          env:
+            - name: DATABASE_PATH
+              value: /data/db.db
+          image: ghcr.io/kj800x/jobfather:commit-$SHA
+          name: jobfather
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /data
+              name: jobfather-data
+          workingDir: /usr/src/jobfather
+      imagePullSecrets:
+        - name: ghcr-kj800x
+      serviceAccountName: jobfather-operator
+      volumes:
+        - name: jobfather-data
+          nfs:
+            path: /data/services/jobfather
+            server: 10.60.1.15
+      nodeSelector:
+        dedicated: nas

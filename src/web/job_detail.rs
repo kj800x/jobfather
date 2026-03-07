@@ -6,9 +6,69 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 
+use std::collections::BTreeMap;
+
 use crate::db::ArchivedJob;
 use crate::kubernetes::events::{self, EventInfo};
 use crate::kubernetes::job_output::JobOutput;
+use crate::snapshot::{self, DiffLine, FileDiffStatus, SnapshotDiff};
+
+struct SnapshotFileView {
+    path: String,
+    status: FileDiffStatus,
+    diff_lines: Option<Vec<DiffLine>>,
+}
+
+struct SnapshotContext {
+    file_views: Vec<SnapshotFileView>,
+    snapshot_status: Option<String>,
+    jt_name: String,
+    jt_namespace: String,
+    /// The baseline set ID this job compared against.
+    baseline_id: Option<i64>,
+    /// True if this is the latest run with snapshots for the template.
+    is_latest_run: bool,
+}
+
+fn build_snapshot_file_views(
+    diff: &SnapshotDiff,
+    baseline: &BTreeMap<String, Vec<u8>>,
+    current: &BTreeMap<String, Vec<u8>>,
+) -> Vec<SnapshotFileView> {
+    let mut views: Vec<SnapshotFileView> = Vec::new();
+
+    // Add differing files
+    for f in &diff.files {
+        let diff_lines = if f.path.ends_with(".json") && f.status == FileDiffStatus::Changed {
+            baseline
+                .get(&f.path)
+                .and_then(|old| current.get(&f.path).and_then(|new| snapshot::json_diff(old, new)))
+        } else {
+            None
+        };
+        views.push(SnapshotFileView {
+            path: f.path.clone(),
+            status: f.status.clone(),
+            diff_lines,
+        });
+    }
+
+    // Add matched files (in both baseline and current with same content)
+    let diff_paths: std::collections::HashSet<&str> =
+        diff.files.iter().map(|f| f.path.as_str()).collect();
+    for path in current.keys() {
+        if !diff_paths.contains(path.as_str()) {
+            views.push(SnapshotFileView {
+                path: path.clone(),
+                status: FileDiffStatus::Matched,
+                diff_lines: None,
+            });
+        }
+    }
+
+    views.sort_by(|a, b| a.path.cmp(&b.path));
+    views
+}
 
 #[get("/jobs/{namespace}/{name}")]
 pub async fn job_detail_page(
@@ -95,7 +155,7 @@ pub async fn job_detail_fragment(
 
             match archived {
                 Some(job) => {
-                    let markup = render_archived_job(&job);
+                    let markup = render_archived_job(&job, &pool);
                     HttpResponse::Ok()
                         .content_type("text/html; charset=utf-8")
                         .body(markup.into_string())
@@ -144,6 +204,39 @@ pub async fn job_output_archive(
         .body("No archive found")
 }
 
+#[get("/jobs/{namespace}/{name}/output/test-snapshots.tar.gz")]
+pub async fn job_output_test_snapshots(
+    path: web::Path<(String, String)>,
+    pool: web::Data<Pool<SqliteConnectionManager>>,
+) -> impl Responder {
+    let (namespace, name) = path.into_inner();
+
+    if let Some(data) = pool.get().ok().and_then(|conn| {
+        crate::db::job_output::get(&name, &namespace, "test-snapshots.tar.gz", &conn).ok().flatten()
+    }) {
+        return HttpResponse::Ok()
+            .content_type("application/gzip")
+            .append_header(("Content-Disposition", "attachment; filename=\"test-snapshots.tar.gz\""))
+            .body(data);
+    }
+
+    if let Some(data) = pool.get().ok().and_then(|conn| {
+        ArchivedJob::get_by_name_and_namespace(&name, &namespace, &conn)
+            .ok()
+            .flatten()
+            .and_then(|j| j.output_test_snapshots)
+    }) {
+        return HttpResponse::Ok()
+            .content_type("application/gzip")
+            .append_header(("Content-Disposition", "attachment; filename=\"test-snapshots.tar.gz\""))
+            .body(data);
+    }
+
+    HttpResponse::NotFound()
+        .content_type("text/plain")
+        .body("No test snapshots found")
+}
+
 async fn render_live_job(job: &Job, client: &Client, namespace: &str, pool: &Pool<SqliteConnectionManager>) -> Markup {
     let job_name = job.name_any();
     let status = job_status(job);
@@ -171,58 +264,77 @@ async fn render_live_job(job: &Job, client: &Client, namespace: &str, pool: &Poo
     };
 
     html! {
-        div class="jt-info-card" {
-            div class="jt-info-card-body" {
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Source" }
-                    span class="jt-info-value" {
-                        span class="badge badge-info" { "Live" }
+        div class="info-card" {
+            div class="info-card-hero" {
+                div class="info-hero-left" {
+                    span class="info-hero-title" { (&job_name) }
+                    span class=(format!("badge badge-{}", status.0)) { (status.1) }
+                    span class="badge badge-info" { "Live" }
+                }
+                @if !duration.is_empty() {
+                    div class="info-hero-duration" {
+                        span class="info-hero-duration-value" { (duration) }
                     }
                 }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Status" }
-                    span class="jt-info-value" {
-                        span class=(format!("badge badge-{}", status.0)) { (status.1) }
-                    }
-                }
+            }
+            div class="info-card-grid" {
                 @if let Some(jt) = jt_ref {
-                    div class="jt-info-row" {
-                        span class="jt-info-label" { "Job Template" }
-                        span class="jt-info-value" {
+                    div class="info-tile" {
+                        span class="info-tile-label" { "Job Template" }
+                        span class="info-tile-value" {
                             a href=(format!("/job-templates/{}/{}", namespace, jt.name)) { (&jt.name) }
                         }
                     }
                 }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Started" }
-                    span class="jt-info-value" {
+                div class="info-tile" {
+                    span class="info-tile-label" { "Started" }
+                    span class="info-tile-value" {
                         @if let Some(t) = &start_time {
-                            code { (t) }
+                            (t)
                         } @else {
                             span class="text-muted" { "Not started" }
                         }
                     }
                 }
                 @if let Some(t) = &completion_time {
-                    div class="jt-info-row" {
-                        span class="jt-info-label" { "Completed" }
-                        span class="jt-info-value" {
-                            code { (t) }
-                        }
-                    }
-                }
-                @if !duration.is_empty() {
-                    div class="jt-info-row" {
-                        span class="jt-info-label" { "Duration" }
-                        span class="jt-info-value" { (duration) }
+                    div class="info-tile" {
+                        span class="info-tile-label" { "Completed" }
+                        span class="info-tile-value" { (t) }
                     }
                 }
             }
         }
 
-        (render_events_section(&events))
+        @let snap_ctx = output.test_snapshots.as_ref().and_then(|tarball| {
+            let jt = jt_ref?;
+            let current = snapshot::extract_tarball(tarball).ok()?;
+            let conn = pool.get().ok()?;
+            // Load the baseline this job was compared against (stored at upload time)
+            let stored_baseline_id = crate::db::job_output::get_string(&job_name, namespace, "_snapshot_baseline_id", &conn)
+                .and_then(|s| s.parse::<i64>().ok());
+            let (baseline_id, baseline) = match stored_baseline_id {
+                Some(id) => (Some(id), crate::db::snapshot::load_baseline_files(id, &conn)),
+                None => crate::db::snapshot::load_latest_baseline_conn(&jt.name, namespace, &conn),
+            };
+            let diff = snapshot::compare(&baseline, &current);
+            let file_views = build_snapshot_file_views(&diff, &baseline, &current);
+            let stored_status = crate::db::job_output::get_string(&job_name, namespace, "_snapshot_status", &conn);
+            let is_latest_run = crate::db::snapshot::is_latest_snapshot_job(
+                &jt.name, namespace, &job_name, namespace, &conn,
+            );
+            Some(SnapshotContext {
+                file_views,
+                snapshot_status: stored_status,
+                jt_name: jt.name.clone(),
+                jt_namespace: namespace.to_string(),
+                baseline_id,
+                is_latest_run,
+            })
+        });
 
-        (render_output_sections(&output, namespace, &job_name))
+        (render_output_sections(&output, namespace, &job_name, snap_ctx.as_ref()))
+
+        (render_events_section(&events))
 
         h3 class="section-title" { "Logs" }
         @if let Some(log_text) = &logs {
@@ -233,7 +345,7 @@ async fn render_live_job(job: &Job, client: &Client, namespace: &str, pool: &Poo
     }
 }
 
-fn render_archived_job(job: &ArchivedJob) -> Markup {
+fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) -> Markup {
     let badge_class = match job.status.as_str() {
         "Succeeded" => "success",
         "Failed" => "danger",
@@ -245,6 +357,7 @@ fn render_archived_job(job: &ArchivedJob) -> Markup {
         report_md: job.output_report_md.clone(),
         test_results_xml: job.output_test_results_xml.clone(),
         archive: job.output_archive.clone(),
+        test_snapshots: job.output_test_snapshots.clone(),
     };
 
     let archived_events: Vec<EventInfo> = job
@@ -253,65 +366,88 @@ fn render_archived_job(job: &ArchivedJob) -> Markup {
         .and_then(|json| serde_json::from_str(json).ok())
         .unwrap_or_default();
 
+    let duration_str = job.duration_seconds.map(format_duration);
+
     html! {
-        div class="jt-info-card" {
-            div class="jt-info-card-body" {
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Source" }
-                    span class="jt-info-value" {
-                        span class="badge badge-muted" { "Archived" }
+        div class="info-card" {
+            div class="info-card-hero" {
+                div class="info-hero-left" {
+                    span class="info-hero-title" { (&job.name) }
+                    span class=(format!("badge badge-{}", badge_class)) { (&job.status) }
+                    span class="badge badge-muted" { "Archived" }
+                }
+                @if let Some(d) = &duration_str {
+                    div class="info-hero-duration" {
+                        span class="info-hero-duration-value" { (d) }
                     }
                 }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Status" }
-                    span class="jt-info-value" {
-                        span class=(format!("badge badge-{}", badge_class)) { (&job.status) }
-                    }
-                }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Job Template" }
-                    span class="jt-info-value" {
+            }
+            div class="info-card-grid" {
+                div class="info-tile" {
+                    span class="info-tile-label" { "Job Template" }
+                    span class="info-tile-value" {
                         a href=(format!("/job-templates/{}/{}", job.job_template_namespace, job.job_template_name)) {
                             (&job.job_template_name)
                         }
                     }
                 }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Started" }
-                    span class="jt-info-value" {
+                div class="info-tile" {
+                    span class="info-tile-label" { "Started" }
+                    span class="info-tile-value" {
                         @if let Some(t) = &job.start_time {
-                            code { (t) }
+                            (t)
                         } @else {
                             span class="text-muted" { "Unknown" }
                         }
                     }
                 }
                 @if let Some(t) = &job.completion_time {
-                    div class="jt-info-row" {
-                        span class="jt-info-label" { "Completed" }
-                        span class="jt-info-value" {
-                            code { (t) }
-                        }
+                    div class="info-tile" {
+                        span class="info-tile-label" { "Completed" }
+                        span class="info-tile-value" { (t) }
                     }
                 }
-                @if let Some(d) = job.duration_seconds {
-                    div class="jt-info-row" {
-                        span class="jt-info-label" { "Duration" }
-                        span class="jt-info-value" { (format_duration(d)) }
-                    }
-                }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Archived At" }
-                    span class="jt-info-value" {
-                        code { (&job.archived_at) }
-                    }
+                div class="info-tile" {
+                    span class="info-tile-label" { "Archived At" }
+                    span class="info-tile-value" { (&job.archived_at) }
                 }
             }
         }
 
-        (render_events_section(&archived_events))
+        @let snap_ctx = job.snapshot_diff_json.as_ref()
+            .and_then(|diff_json| serde_json::from_str::<SnapshotDiff>(diff_json).ok())
+            .map(|diff| {
+                let conn = pool.get().ok();
+                let file_views = job.output_test_snapshots.as_ref()
+                    .and_then(|tarball| snapshot::extract_tarball(tarball).ok())
+                    .map(|current| {
+                        // Use the job's fixed baseline, not the latest
+                        let baseline = match (job.snapshot_baseline_id, &conn) {
+                            (Some(id), Some(c)) => crate::db::snapshot::load_baseline_files(id, c),
+                            _ => BTreeMap::new(),
+                        };
+                        build_snapshot_file_views(&diff, &baseline, &current)
+                    })
+                    .unwrap_or_default();
+                let is_latest_run = conn.as_ref()
+                    .map(|c| crate::db::snapshot::is_latest_snapshot_job(
+                        &job.job_template_name, &job.job_template_namespace,
+                        &job.name, &job.namespace, c,
+                    ))
+                    .unwrap_or(false);
+                SnapshotContext {
+                    file_views,
+                    snapshot_status: job.snapshot_status.clone(),
+                    jt_name: job.job_template_name.clone(),
+                    jt_namespace: job.job_template_namespace.clone(),
+                    baseline_id: job.snapshot_baseline_id,
+                    is_latest_run,
+                }
+            });
 
-        (render_output_sections(&output, &job.namespace, &job.name))
+        (render_output_sections(&output, &job.namespace, &job.name, snap_ctx.as_ref()))
+
+        (render_events_section(&archived_events))
 
         h3 class="section-title" { "Logs" }
         @if let Some(log_text) = &job.logs {
@@ -322,51 +458,237 @@ fn render_archived_job(job: &ArchivedJob) -> Markup {
     }
 }
 
-fn render_output_sections(output: &JobOutput, namespace: &str, job_name: &str) -> Markup {
-    if !output.has_any() {
+fn render_output_sections(
+    output: &JobOutput,
+    namespace: &str,
+    job_name: &str,
+    snap_ctx: Option<&SnapshotContext>,
+) -> Markup {
+    let has_tests = output.test_results_xml.is_some() || snap_ctx.is_some();
+    let has_other = output.result_json.is_some() || output.report_md.is_some() || output.archive.is_some();
+
+    if !has_tests && !has_other {
         return html! {};
     }
 
+    let junit_suites = output.test_results_xml.as_deref()
+        .and_then(super::junit::parse_junit_xml);
+
     html! {
-        h3 class="section-title" { "Job Output" }
+        // Combined test results section (JUnit + snapshots)
+        @if has_tests {
+            h3 class="section-title" { "Test Results" }
 
-        // Test results first — they're the most important output type
-        @if let Some(xml) = &output.test_results_xml {
-            div class="output-section" {
-                @if let Some(suites) = super::junit::parse_junit_xml(xml) {
-                    (super::junit::render_test_results(&suites))
-                } @else {
-                    div class="output-section-header" { "test-results.xml" }
-                    pre class="output-viewer output-xml" { (xml) }
-                }
-            }
-        }
+            // Compute combined summary
+            @let junit_total = junit_suites.as_ref().map(|s| s.total_tests()).unwrap_or(0);
+            @let junit_failed = junit_suites.as_ref().map(|s| s.total_failures() + s.total_errors()).unwrap_or(0);
+            @let junit_skipped = junit_suites.as_ref().map(|s| s.total_skipped()).unwrap_or(0);
+            @let snap_total = snap_ctx.map(|s| s.file_views.len() as u32).unwrap_or(0);
+            @let snap_differing = snap_ctx.map(|s| s.file_views.iter().filter(|f| f.status != FileDiffStatus::Matched).count() as u32).unwrap_or(0);
+            @let snap_accepted = snap_ctx.map(|s| s.snapshot_status.as_deref() == Some("accepted_as_baseline")).unwrap_or(false);
+            // Accepted diffs don't count as failures
+            @let total = junit_total + snap_total;
+            @let failed = junit_failed + if !snap_accepted { snap_differing } else { 0 };
+            @let all_passed = failed == 0;
+            @let can_accept = snap_ctx.map(|s| snap_differing > 0 && !snap_accepted && s.is_latest_run).unwrap_or(false);
 
-        @if let Some(json) = &output.result_json {
-            div class="output-section" {
-                div class="output-section-header" { "result.json" }
-                pre class="output-viewer output-json" { (json) }
-            }
-        }
-
-        @if let Some(md) = &output.report_md {
-            div class="output-section" {
-                div class="output-section-header" { "report.md" }
-                div class="output-viewer output-markdown" {
-                    pre { (md) }
-                }
-            }
-        }
-
-        @if output.archive.is_some() {
-            div class="output-section" {
-                div class="output-section-header" { "archive.tar.gz" }
-                div class="output-viewer output-archive" {
-                    a href=(format!("/jobs/{}/{}/output/archive.tar.gz", namespace, job_name))
-                        class="btn btn-secondary" download {
-                        "Download archive.tar.gz"
+            div id="snapshot-section" {
+                div class=(if all_passed { "test-summary-bar test-summary-pass" } else { "test-summary-bar test-summary-fail" }) {
+                    @if all_passed {
+                        span class="test-summary-icon" { "\u{2713}" }
+                        " All " (total) " tests passed"
+                    } @else {
+                        span class="test-summary-icon" { "\u{2717}" }
+                        " " (failed) " of " (total) " tests failed"
+                    }
+                    @if junit_skipped > 0 {
+                        span class="test-summary-skipped" { " (" (junit_skipped) " skipped)" }
+                    }
+                    // Accept button: only for latest run comparing against current baseline
+                    @if let Some(ctx) = snap_ctx {
+                        @if can_accept {
+                            span class="test-summary-skipped" {
+                                " "
+                                button class="btn btn-sm snapshot-accept-btn"
+                                    hx-post=(format!("/api/jobs/{}/{}/snapshots/accept", namespace, job_name))
+                                    hx-vals=(format!(r#"{{"job_template_name":"{}","job_template_namespace":"{}"}}"#, ctx.jt_name, ctx.jt_namespace))
+                                    hx-target="#snapshot-suite"
+                                    hx-swap="outerHTML"
+                                    hx-confirm="Accept these snapshots as the new baseline?" {
+                                    "Accept as new baseline"
+                                }
+                            }
+                        }
                     }
                 }
+
+                // JUnit suites
+                @if let Some(ref suites) = junit_suites {
+                    @for suite in &suites.suites {
+                        (super::junit::render_test_suite(suite))
+                    }
+                }
+
+                // Snapshot suite
+                @if let Some(ctx) = snap_ctx {
+                    div id="snapshot-suite" class="test-suite" {
+                        div class="test-suite-header" {
+                            span class="test-suite-name" { "snapshots" }
+                            span class="test-suite-stats" { (snap_total) " files" }
+                        }
+                        @for file in &ctx.file_views {
+                            @let is_diff = file.status != FileDiffStatus::Matched;
+                            @let (icon, row_class) = if !is_diff {
+                                ("\u{2713}", "test-case test-case-passed")
+                            } else if snap_accepted {
+                                ("\u{0394}", "test-case test-case-info")
+                            } else {
+                                ("\u{2717}", "test-case test-case-failed")
+                            };
+                            @let status_label = match file.status {
+                                FileDiffStatus::Added => " (added)",
+                                FileDiffStatus::Removed => " (removed)",
+                                FileDiffStatus::Changed => " (changed)",
+                                FileDiffStatus::Matched => "",
+                            };
+                            @let baseline_link = match ctx.baseline_id {
+                                Some(id) => format!("/snapshots/baseline/{}/{}", id, file.path),
+                                None => format!(
+                                    "/job-templates/{}/{}/snapshots/baseline/{}",
+                                    ctx.jt_namespace, ctx.jt_name, file.path
+                                ),
+                            };
+                            div class=(row_class) {
+                                @if is_diff && file.diff_lines.is_some() {
+                                    details class="snapshot-details" {
+                                        summary class="test-case-header" {
+                                            span class="test-case-icon" { (icon) }
+                                            span class="test-case-name" { (&file.path) (status_label) }
+                                            span class="snapshot-file-links" {
+                                                @if file.status != FileDiffStatus::Added {
+                                                    a href=(&baseline_link) target="_blank"
+                                                        class="btn btn-secondary btn-sm"
+                                                        onclick="event.stopPropagation()" {
+                                                        "Baseline"
+                                                    }
+                                                }
+                                                a href=(format!(
+                                                    "/jobs/{}/{}/snapshots/current/{}",
+                                                    namespace, job_name, file.path
+                                                )) target="_blank" class="btn btn-secondary btn-sm"
+                                                    onclick="event.stopPropagation()" {
+                                                    "Current"
+                                                }
+                                            }
+                                        }
+                                        div class="test-case-detail" {
+                                            div class="snapshot-diff" {
+                                                @for line in file.diff_lines.as_ref().unwrap() {
+                                                    @match line {
+                                                        DiffLine::Context(text) => {
+                                                            div class="diff-line diff-context" {
+                                                                span class="diff-marker" { " " }
+                                                                (text)
+                                                            }
+                                                        },
+                                                        DiffLine::Added(text) => {
+                                                            div class="diff-line diff-added" {
+                                                                span class="diff-marker" { "+" }
+                                                                (text)
+                                                            }
+                                                        },
+                                                        DiffLine::Removed(text) => {
+                                                            div class="diff-line diff-removed" {
+                                                                span class="diff-marker" { "-" }
+                                                                (text)
+                                                            }
+                                                        },
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } @else if is_diff {
+                                    div class="test-case-header" {
+                                        span class="test-case-icon" { (icon) }
+                                        span class="test-case-name" { (&file.path) (status_label) }
+                                        span class="snapshot-file-links" {
+                                            @if file.status != FileDiffStatus::Added {
+                                                a href=(&baseline_link) target="_blank"
+                                                    class="btn btn-secondary btn-sm" {
+                                                    "Baseline"
+                                                }
+                                            }
+                                            @if file.status != FileDiffStatus::Removed {
+                                                a href=(format!(
+                                                    "/jobs/{}/{}/snapshots/current/{}",
+                                                    namespace, job_name, file.path
+                                                )) target="_blank" class="btn btn-secondary btn-sm" {
+                                                    "Current"
+                                                }
+                                            }
+                                        }
+                                    }
+                                } @else {
+                                    div class="test-case-header" {
+                                        span class="test-case-icon" { (icon) }
+                                        span class="test-case-name" { (&file.path) }
+                                        span class="snapshot-file-links" {
+                                            a href=(format!(
+                                                "/jobs/{}/{}/snapshots/current/{}",
+                                                namespace, job_name, file.path
+                                            )) target="_blank" class="btn btn-secondary btn-sm" {
+                                                "Current"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Non-test output sections
+        @if has_other {
+            h3 class="section-title" { "Job Output" }
+
+            @if let Some(json) = &output.result_json {
+                div class="output-section" {
+                    div class="output-section-header" { "result.json" }
+                    pre class="output-viewer output-json" { (json) }
+                }
+            }
+
+            @if let Some(md) = &output.report_md {
+                div class="output-section" {
+                    div class="output-section-header" { "report.md" }
+                    div class="output-viewer output-markdown" {
+                        pre { (md) }
+                    }
+                }
+            }
+
+            @if output.archive.is_some() {
+                div class="output-section" {
+                    div class="output-section-header" { "archive.tar.gz" }
+                    div class="output-viewer output-archive" {
+                        a href=(format!("/jobs/{}/{}/output/archive.tar.gz", namespace, job_name))
+                            class="btn btn-secondary" download {
+                            "Download archive.tar.gz"
+                        }
+                    }
+                }
+            }
+        }
+
+        // Unparseable XML fallback
+        @if output.test_results_xml.is_some() && junit_suites.is_none() {
+            h3 class="section-title" { "Test Results" }
+            div class="output-section" {
+                div class="output-section-header" { "test-results.xml" }
+                pre class="output-viewer output-xml" { (output.test_results_xml.as_deref().unwrap_or("")) }
             }
         }
     }

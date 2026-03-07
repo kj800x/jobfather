@@ -106,6 +106,7 @@ async fn main() -> std::io::Result<()> {
     let reconciler_client = kube::Client::try_default()
         .await
         .expect("Failed to initialize Kubernetes client for reconciler");
+    let scheduler_client = reconciler_client.clone();
 
     tokio::select! {
         result = start_http(registry, pool.clone()) => {
@@ -113,8 +114,11 @@ async fn main() -> std::io::Result<()> {
                 log::error!("HTTP server error: {}", e);
             }
         }
-        _ = kubernetes::reconciler::run(reconciler_client, pool) => {
+        _ = kubernetes::reconciler::run(reconciler_client, pool.clone()) => {
             log::error!("Reconciler exited unexpectedly");
+        }
+        _ = kubernetes::scheduler::run(scheduler_client, pool) => {
+            log::error!("Scheduler exited unexpectedly");
         }
     };
 

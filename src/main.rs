@@ -1,10 +1,13 @@
 mod db;
 mod kubernetes;
+mod metrics;
 mod snapshot;
 mod web;
 
+use std::sync::Arc;
+
 use actix_web::{get, middleware, web::Data, App, HttpResponse, HttpServer, Responder};
-use actix_web_opentelemetry::{PrometheusMetricsHandler, RequestMetrics, RequestTracing};
+use actix_web_opentelemetry::{RequestMetrics, RequestTracing};
 use jobfather::serve_static_file;
 use opentelemetry::global;
 use opentelemetry_sdk::metrics::MeterProvider;
@@ -18,9 +21,33 @@ async fn root() -> impl Responder {
         .finish()
 }
 
+async fn metrics_handler(
+    registry: Data<prometheus::Registry>,
+    pool: Data<Pool<SqliteConnectionManager>>,
+    metrics: Data<Arc<metrics::Metrics>>,
+    client: Data<kube::Client>,
+) -> impl Responder {
+    // Update time-since gauges at scrape time for accuracy
+    if let Ok(conn) = pool.get() {
+        metrics
+            .update_time_since_gauges(&conn, client.get_ref(), chrono::Utc::now())
+            .await;
+    }
+
+    let encoder = prometheus::TextEncoder::new();
+    let metric_families = registry.gather();
+    match encoder.encode_to_string(&metric_families) {
+        Ok(body) => HttpResponse::Ok()
+            .content_type("text/plain; version=0.0.4; charset=utf-8")
+            .body(body),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Metrics encoding error: {}", e)),
+    }
+}
+
 async fn start_http(
     registry: prometheus::Registry,
     pool: Pool<SqliteConnectionManager>,
+    metrics: Arc<metrics::Metrics>,
 ) -> Result<(), std::io::Error> {
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -45,9 +72,11 @@ async fn start_http(
             .wrap(RequestMetrics::default())
             .route(
                 "/api/metrics",
-                actix_web::web::get().to(PrometheusMetricsHandler::new(registry.clone())),
+                actix_web::web::get().to(metrics_handler),
             )
             .wrap(middleware::Logger::default())
+            .app_data(Data::new(registry.clone()))
+            .app_data(Data::new(metrics.clone()))
             .app_data(Data::new(kube_client.clone()))
             .app_data(Data::new(pool.clone()))
             .service(root)
@@ -94,6 +123,8 @@ async fn main() -> std::io::Result<()> {
     let provider = MeterProvider::builder().with_reader(exporter).build();
     global::set_meter_provider(provider);
 
+    let metrics = Arc::new(metrics::Metrics::new(&registry));
+
     let manager = SqliteConnectionManager::file(
         std::env::var("DATABASE_PATH").unwrap_or("db.db".to_string()),
     );
@@ -109,15 +140,15 @@ async fn main() -> std::io::Result<()> {
     let scheduler_client = reconciler_client.clone();
 
     tokio::select! {
-        result = start_http(registry, pool.clone()) => {
+        result = start_http(registry, pool.clone(), metrics.clone()) => {
             if let Err(e) = result {
                 log::error!("HTTP server error: {}", e);
             }
         }
-        _ = kubernetes::reconciler::run(reconciler_client, pool.clone()) => {
+        _ = kubernetes::reconciler::run(reconciler_client, pool.clone(), metrics.clone()) => {
             log::error!("Reconciler exited unexpectedly");
         }
-        _ = kubernetes::scheduler::run(scheduler_client, pool) => {
+        _ = kubernetes::scheduler::run(scheduler_client, pool, metrics) => {
             log::error!("Scheduler exited unexpectedly");
         }
     };

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use croner::Cron;
 use k8s_openapi::api::batch::v1::Job;
@@ -8,6 +10,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 
 use crate::kubernetes::JobTemplate;
+use crate::metrics::Metrics;
 
 /// Resolve a schedule string (keyword or cron expression) into a validated cron expression.
 fn resolve_schedule(schedule: &str, namespace: &str, name: &str) -> Option<String> {
@@ -83,7 +86,7 @@ fn is_schedule_due(
 fn find_prev_occurrence(cron: &Cron, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     use chrono::Duration;
 
-    let search_start = now - Duration::hours(48);
+    let search_start = now - Duration::days(32);
     let mut current = search_start;
     let mut last_before_now = None;
 
@@ -124,9 +127,9 @@ async fn get_last_run_time(
                     .is_some_and(|refs| refs.iter().any(|r| r.uid == jt_uid))
             })
             .filter_map(|j| {
-                j.metadata
-                    .creation_timestamp
+                j.status
                     .as_ref()
+                    .and_then(|s| s.start_time.as_ref())
                     .map(|t| t.0)
             })
             .max(),
@@ -164,18 +167,21 @@ async fn get_last_run_time(
     }
 }
 
-pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>) {
+pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>, metrics: Arc<Metrics>) {
     log::info!("Starting scheduler loop");
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
     loop {
         interval.tick().await;
 
+        let tick_timer = metrics.scheduler_tick_duration_seconds.start_timer();
+
         let jt_api: Api<JobTemplate> = Api::all(client.clone());
         let job_templates = match jt_api.list(&kube::api::ListParams::default()).await {
             Ok(list) => list.items,
             Err(e) => {
                 log::warn!("Scheduler: failed to list JobTemplates: {}", e);
+                tick_timer.observe_duration();
                 continue;
             }
         };
@@ -237,5 +243,12 @@ pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>) {
                 }
             }
         }
+
+        // Update gauge metrics
+        metrics
+            .update_gauges(&client, &pool, &job_templates)
+            .await;
+
+        tick_timer.observe_duration();
     }
 }

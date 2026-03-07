@@ -32,10 +32,6 @@ pub struct JobTemplateSpec {
 pub struct JobTemplateStatus {}
 
 impl JobTemplate {
-    pub fn is_cronjob(&self) -> bool {
-        self.spec.schedule.is_some()
-    }
-
     pub fn is_acceptance_test(&self) -> bool {
         self.spec.acceptance_test.unwrap_or(false)
     }

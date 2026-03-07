@@ -92,14 +92,6 @@ impl ArchivedJob {
         })
     }
 
-    pub fn has_output(&self) -> bool {
-        self.output_result_json.is_some()
-            || self.output_report_md.is_some()
-            || self.output_test_results_xml.is_some()
-            || self.output_archive.is_some()
-            || self.output_test_snapshots.is_some()
-    }
-
     pub fn get_by_job_template(
         job_template_name: &str,
         job_template_namespace: &str,

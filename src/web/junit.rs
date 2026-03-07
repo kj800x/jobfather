@@ -49,10 +49,6 @@ impl TestSuites {
         self.suites.iter().map(|s| s.skipped).sum()
     }
 
-    pub fn total_passed(&self) -> u32 {
-        self.total_tests() - self.total_failures() - self.total_errors() - self.total_skipped()
-    }
-
     pub fn all_passed(&self) -> bool {
         self.total_failures() == 0 && self.total_errors() == 0
     }

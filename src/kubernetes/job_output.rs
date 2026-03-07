@@ -22,14 +22,6 @@ impl JobOutput {
         }
     }
 
-    pub fn has_any(&self) -> bool {
-        self.result_json.is_some()
-            || self.report_md.is_some()
-            || self.test_results_xml.is_some()
-            || self.archive.is_some()
-            || self.test_snapshots.is_some()
-    }
-
     /// Load job output from the job_output table (uploaded by sidecar).
     pub fn load(
         job_name: &str,

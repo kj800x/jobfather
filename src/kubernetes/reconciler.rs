@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -13,18 +14,24 @@ use r2d2_sqlite::SqliteConnectionManager;
 
 use crate::db::{archived_job::ArchivedJobEgg, ArchivedJob};
 use crate::kubernetes::JobTemplate;
+use crate::metrics::Metrics;
 
 struct Context {
     client: Client,
     pool: Pool<SqliteConnectionManager>,
+    metrics: Arc<Metrics>,
+    /// UIDs of jobs for which completion metrics have already been recorded.
+    metrics_recorded: Mutex<HashSet<String>>,
 }
 
-pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>) {
+pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>, metrics: Arc<Metrics>) {
     let job_api: Api<Job> = Api::all(client.clone());
 
     let ctx = Arc::new(Context {
         client: client.clone(),
         pool,
+        metrics,
+        metrics_recorded: Mutex::new(HashSet::new()),
     });
 
     Controller::new(job_api, Default::default())
@@ -62,6 +69,29 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
             return Ok(Action::requeue(Duration::from_secs(30)));
         }
     };
+
+    // Record completion metrics once per job
+    let job_uid = job.metadata.uid.clone().unwrap_or_default();
+    {
+        let mut recorded = ctx.metrics_recorded.lock().unwrap_or_else(|e| e.into_inner());
+        if recorded.insert(job_uid.clone()) {
+            let status = job_status_string(&job);
+            let duration_seconds = job
+                .status
+                .as_ref()
+                .and_then(|s| s.start_time.as_ref())
+                .map(|t| (completion_time - t.0).num_seconds());
+            ctx.metrics.record_job_completion(
+                &namespace,
+                &owner_ref.name,
+                &status,
+                duration_seconds,
+            );
+        }
+        ctx.metrics
+            .reconciler_tracked_jobs
+            .set(recorded.len() as f64);
+    }
 
     // Fetch the parent JobTemplate to get cleanupAfter
     let jt_api: Api<JobTemplate> = Api::namespaced(ctx.client.clone(), &namespace);
@@ -184,6 +214,11 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         return Ok(Action::requeue(Duration::from_secs(30)));
     }
 
+    // Clean up metrics tracking for this job
+    if let Ok(mut recorded) = ctx.metrics_recorded.lock() {
+        recorded.remove(&job_uid);
+    }
+
     log::info!("Successfully archived and deleted job {}/{}", namespace, job_name);
     Ok(Action::await_change())
 }
@@ -301,8 +336,8 @@ pub fn parse_duration(s: &str) -> chrono::Duration {
         }
     }
 
-    // Default to 30 minutes if parsing results in 0
     if total_seconds == 0 {
+        log::warn!("Invalid or empty cleanupAfter value '{}', defaulting to 30m", s);
         chrono::Duration::minutes(30)
     } else {
         chrono::Duration::seconds(total_seconds)

@@ -1,6 +1,6 @@
 pub mod header;
 mod job_detail;
-mod junit;
+pub mod junit;
 mod job_output_api;
 mod job_template_detail;
 mod job_templates;

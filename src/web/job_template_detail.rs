@@ -1,4 +1,6 @@
 use actix_web::{get, post, web, HttpResponse, Responder};
+use chrono::{DateTime, Utc};
+use chrono_tz::US::Eastern;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::PodTemplateSpec;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -11,6 +13,25 @@ use serde::Deserialize;
 
 use crate::db::ArchivedJob;
 use crate::kubernetes::JobTemplate;
+
+/// A unified row for the combined jobs table.
+struct JobRow {
+    name: String,
+    namespace: String,
+    is_live: bool,
+    status: String,
+    status_badge_class: String,
+    start_time: Option<DateTime<Utc>>,
+    duration_display: String,
+    test_results: Option<TestResultSummary>,
+    snapshot_status: Option<String>,
+    artifact_sha: Option<String>,
+}
+
+struct TestResultSummary {
+    all_passed: bool,
+    failures: u32,
+}
 
 #[get("/job-templates/{namespace}/{name}")]
 pub async fn job_template_detail_page(
@@ -72,28 +93,22 @@ pub async fn job_template_detail_fragment(
         }
     };
 
+    let is_acceptance_test = job_template.is_acceptance_test();
+
     // Fetch live Jobs in the namespace, filter to ones owned by this JobTemplate
     let job_api: Api<Job> = Api::namespaced(client.get_ref().clone(), &namespace);
     let jt_uid = job_template.uid().unwrap_or_default();
     let live_jobs: Vec<Job> = match job_api.list(&Default::default()).await {
-        Ok(list) => {
-            let mut jobs: Vec<Job> = list
-                .items
-                .into_iter()
-                .filter(|job| {
-                    job.metadata
-                        .owner_references
-                        .as_ref()
-                        .is_some_and(|refs| refs.iter().any(|r| r.uid == jt_uid))
-                })
-                .collect();
-            jobs.sort_by(|a, b| {
-                let a_time = a.status.as_ref().and_then(|s| s.start_time.as_ref());
-                let b_time = b.status.as_ref().and_then(|s| s.start_time.as_ref());
-                b_time.cmp(&a_time)
-            });
-            jobs
-        }
+        Ok(list) => list
+            .items
+            .into_iter()
+            .filter(|job| {
+                job.metadata
+                    .owner_references
+                    .as_ref()
+                    .is_some_and(|refs| refs.iter().any(|r| r.uid == jt_uid))
+            })
+            .collect(),
         Err(e) => {
             log::warn!("Failed to list Jobs in {}: {}", namespace, e);
             vec![]
@@ -112,52 +127,170 @@ pub async fn job_template_detail_fragment(
         }
     };
 
+    // Build unified rows
+    let mut rows: Vec<JobRow> = Vec::new();
+
+    // Live jobs
+    for job in &live_jobs {
+        let (badge_class, status_text) = job_status(job);
+        let start_dt = job
+            .status
+            .as_ref()
+            .and_then(|s| s.start_time.as_ref())
+            .map(|t| t.0);
+
+        let job_name_str = job.name_any();
+        let is_term = is_terminal(job);
+
+        // Load test results and snapshot status for terminal live jobs
+        let (test_results, snapshot_status) = if is_acceptance_test && is_term {
+            let tr = load_live_test_results(&job_name_str, &namespace, &pool);
+            let ss = load_live_snapshot_status(&job_name_str, &namespace, &pool);
+            (tr, ss)
+        } else {
+            (None, None)
+        };
+
+        let artifact_sha = job
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get("artifactSha"))
+            .cloned();
+
+        rows.push(JobRow {
+            name: job_name_str,
+            namespace: namespace.clone(),
+            is_live: true,
+            status: status_text.to_string(),
+            status_badge_class: badge_class.to_string(),
+            start_time: start_dt,
+            duration_display: job_duration_display(job),
+            test_results,
+            snapshot_status,
+            artifact_sha,
+        });
+    }
+
+    // Archived jobs
+    for job in &archived_jobs {
+        let badge_class = match job.status.as_str() {
+            "Succeeded" => "success",
+            "Failed" => "danger",
+            "Running" => "info",
+            _ => "muted",
+        };
+
+        let start_dt = job
+            .start_time
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
+        let test_results = if is_acceptance_test {
+            job.output_test_results_xml
+                .as_deref()
+                .and_then(|xml| super::junit::parse_junit_xml(xml))
+                .map(|suites| TestResultSummary {
+                    all_passed: suites.all_passed(),
+                    failures: suites.total_failures() + suites.total_errors(),
+                })
+        } else {
+            None
+        };
+
+        let snapshot_status = if is_acceptance_test {
+            job.snapshot_status.clone()
+        } else {
+            None
+        };
+
+        rows.push(JobRow {
+            name: job.name.clone(),
+            namespace: job.namespace.clone(),
+            is_live: false,
+            status: job.status.clone(),
+            status_badge_class: badge_class.to_string(),
+            start_time: start_dt,
+            duration_display: job
+                .duration_seconds
+                .map(format_duration)
+                .unwrap_or_default(),
+            test_results,
+            snapshot_status,
+            artifact_sha: job.artifact_sha.clone(),
+        });
+    }
+
+    // Sort by start time, newest first
+    rows.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+
+    let jt_annotations = job_template.metadata.annotations.as_ref();
+    let jt_artifact_sha = jt_annotations
+        .and_then(|a| a.get("artifactSha"))
+        .map(|s| s.as_str());
+    let jt_config_sha = jt_annotations
+        .and_then(|a| a.get("configSha"))
+        .map(|s| s.as_str());
+
     let markup = html! {
-        // JobTemplate info card
-        div class="jt-info-card" {
-            div class="jt-info-card-body" {
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Schedule" }
-                    span class="jt-info-value" {
-                        @if let Some(schedule) = &job_template.spec.schedule {
-                            code { (schedule) }
-                        } @else {
-                            span class="text-muted" { "On-demand" }
-                        }
+        div class="info-card" {
+            div class="info-card-hero" {
+                div class="info-hero-left" {
+                    span class="info-hero-title" { (&name) }
+                    @if let Some(schedule) = &job_template.spec.schedule {
+                        span class="badge badge-info" { (schedule) }
+                    } @else {
+                        span class="badge badge-muted" { "On-demand" }
                     }
                 }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Cleanup After" }
-                    span class="jt-info-value" {
+                div class="info-hero-actions" {
+                    button class="btn btn-primary"
+                        hx-get=(format!("/job-templates/{}/{}/run-modal", namespace, name))
+                        hx-target="#modal-container"
+                        hx-swap="innerHTML" {
+                        "Run Job"
+                    }
+                }
+            }
+            div class="info-card-grid" {
+                div class="info-tile" {
+                    span class="info-tile-label" { "Cleanup After" }
+                    span class="info-tile-value" {
                         code { (job_template.cleanup_after()) }
                     }
                 }
-                div class="jt-info-row" {
-                    span class="jt-info-label" { "Acceptance Test" }
-                    span class="jt-info-value" {
-                        @if job_template.is_acceptance_test() {
+                div class="info-tile" {
+                    span class="info-tile-label" { "Acceptance Test" }
+                    span class="info-tile-value" {
+                        @if is_acceptance_test {
                             span class="badge badge-info" { "Yes" }
                         } @else {
                             span class="text-muted" { "No" }
                         }
                     }
                 }
-            }
-            div class="jt-info-actions" {
-                button class="btn btn-primary"
-                    hx-get=(format!("/job-templates/{}/{}/run-modal", namespace, name))
-                    hx-target="#modal-container"
-                    hx-swap="innerHTML" {
-                    "Run Job"
+                @if let Some(sha) = jt_artifact_sha {
+                    div class="info-tile" {
+                        span class="info-tile-label" { "Artifact SHA" }
+                        span class="info-tile-value" {
+                            code class="sha-badge" title=(sha) { (&sha[..sha.len().min(8)]) }
+                        }
+                    }
+                }
+                @if let Some(sha) = jt_config_sha {
+                    div class="info-tile" {
+                        span class="info-tile-label" { "Config SHA" }
+                        span class="info-tile-value" {
+                            code class="sha-badge" title=(sha) { (&sha[..sha.len().min(8)]) }
+                        }
+                    }
                 }
             }
         }
 
-        h3 class="section-title" { "Live Jobs" }
-        (render_live_jobs_table(&live_jobs, &namespace))
-
-        h3 class="section-title" { "Archived Jobs" }
-        (render_archived_jobs_table(&archived_jobs))
+        h3 class="section-title" { "Jobs" }
+        (render_combined_table(&rows, is_acceptance_test, &name))
     };
 
     HttpResponse::Ok()
@@ -165,41 +298,154 @@ pub async fn job_template_detail_fragment(
         .body(markup.into_string())
 }
 
-fn render_live_jobs_table(jobs: &[Job], namespace: &str) -> Markup {
+fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &str) -> Markup {
+    let has_any_sha = rows.iter().any(|r| r.artifact_sha.is_some());
+    let col_count = 5
+        + if is_acceptance_test { 2 } else { 0 }
+        + if has_any_sha { 1 } else { 0 };
+
+    // Mark rows where the artifact SHA changed from the previous (next in time) row
+    let sha_changed: Vec<bool> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let prev_sha = rows.get(i + 1).and_then(|r| r.artifact_sha.as_deref());
+            match (&row.artifact_sha, prev_sha) {
+                (Some(cur), Some(prev)) => cur != prev,
+                _ => false,
+            }
+        })
+        .collect();
+
     html! {
         table class="jt-table" {
             thead {
                 tr {
                     th { "Name" }
-                    th { "Status" }
-                    th { "Started" }
-                    th { "Duration" }
+                    @if has_any_sha {
+                        th class="badge-col badge-col-wide" { "Artifact" }
+                    }
+                    th class="badge-col badge-col-wide" { "Source" }
+                    th class="badge-col badge-col-wide" { "Status" }
+                    @if is_acceptance_test {
+                        th class="badge-col badge-col-wide" { "Tests" }
+                        th class="badge-col badge-col-wide" { "Snapshots" }
+                    }
+                    th class="badge-col badge-col-narrow" { "Info" }
+                    th class="time-cell" { "Started" }
+                    th class="time-cell duration-col" { "Duration" }
                 }
             }
             tbody {
-                @if jobs.is_empty() {
+                @if rows.is_empty() {
                     tr {
-                        td colspan="4" class="empty-state" {
-                            "No live jobs."
+                        td colspan=(col_count) class="empty-state" {
+                            "No jobs yet."
                         }
                     }
                 }
-                @for job in jobs {
-                    @let status = job_status(job);
+                @for (i, row) in rows.iter().enumerate() {
                     tr {
                         td class="jt-name" {
-                            a href=(format!("/jobs/{}/{}", namespace, job.name_any())) { (job.name_any()) }
+                            @let display_name = row.name.strip_prefix(jt_name).and_then(|s| s.strip_prefix('-')).unwrap_or(&row.name);
+                            a href=(format!("/jobs/{}/{}", row.namespace, row.name)) { (display_name) }
                         }
-                        td {
-                            span class=(format!("badge badge-{}", status.0)) { (status.1) }
+                        @if has_any_sha {
+                            td class="badge-col badge-col-wide" {
+                                @if let Some(ref sha) = row.artifact_sha {
+                                    @let class = if sha_changed[i] { "sha-badge sha-changed" } else { "sha-badge" };
+                                    code class=(class) title=(sha) data-sha=(sha) { (&sha[..sha.len().min(8)]) }
+                                }
+                            }
                         }
-                        td class="time-cell" {
-                            @if let Some(start) = job.status.as_ref().and_then(|s| s.start_time.as_ref()) {
-                                (start.0.format("%Y-%m-%d %H:%M:%S"))
+                        td class="badge-col badge-col-wide" {
+                            @if row.is_live {
+                                span class="badge badge-info" { "Live" }
+                            } @else {
+                                span class="badge badge-muted" { "Archived" }
+                            }
+                        }
+                        td class="badge-col badge-col-wide" {
+                            span class=(format!("badge badge-{}", row.status_badge_class)) { (&row.status) }
+                        }
+                        @if is_acceptance_test {
+                            td class="badge-col badge-col-wide" {
+                                @if let Some(ref tr) = row.test_results {
+                                    @if tr.all_passed {
+                                        span class="badge badge-success" { "Passing" }
+                                    } @else {
+                                        span class="badge badge-danger" { (tr.failures) " Failing" }
+                                    }
+                                }
+                            }
+                            td class="badge-col badge-col-wide" {
+                                @if let Some(ref status) = row.snapshot_status {
+                                    @match status.as_str() {
+                                        "matches_baseline" => {
+                                            span class="badge badge-success" { "Matches baseline" }
+                                        },
+                                        "accepted_as_baseline" => {
+                                            span class="badge badge-info" { "Accepted as new baseline" }
+                                        },
+                                        "differs_from_baseline" => {
+                                            span class="badge badge-danger" { "Differs from baseline" }
+                                        },
+                                        _ => {
+                                            span class="badge badge-muted" { (status) }
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                        // Combined badges column for narrow screens
+                        td class="badge-col badge-col-narrow" {
+                            @if let Some(ref sha) = row.artifact_sha {
+                                @let class = if sha_changed[i] { "sha-badge sha-changed" } else { "sha-badge" };
+                                code class=(class) title=(sha) data-sha=(sha) { (&sha[..sha.len().min(8)]) }
+                                " "
+                            }
+                            @if row.is_live {
+                                span class="badge badge-info" { "Live" }
+                            } @else {
+                                span class="badge badge-muted" { "Archived" }
+                            }
+                            " "
+                            span class=(format!("badge badge-{}", row.status_badge_class)) { (&row.status) }
+                            @if is_acceptance_test {
+                                @if let Some(ref tr) = row.test_results {
+                                    " "
+                                    @if tr.all_passed {
+                                        span class="badge badge-success" { "Passing" }
+                                    } @else {
+                                        span class="badge badge-danger" { (tr.failures) " Failing" }
+                                    }
+                                }
+                                @if let Some(ref status) = row.snapshot_status {
+                                    " "
+                                    @match status.as_str() {
+                                        "matches_baseline" => {
+                                            span class="badge badge-success" { "Matches baseline" }
+                                        },
+                                        "accepted_as_baseline" => {
+                                            span class="badge badge-info" { "Accepted as new baseline" }
+                                        },
+                                        "differs_from_baseline" => {
+                                            span class="badge badge-danger" { "Differs from baseline" }
+                                        },
+                                        _ => {
+                                            span class="badge badge-muted" { (status) }
+                                        },
+                                    }
+                                }
                             }
                         }
                         td class="time-cell" {
-                            (job_duration_display(job))
+                            @if let Some(dt) = row.start_time {
+                                span title=(format_eastern(&dt)) { (timeago(&dt)) }
+                            }
+                        }
+                        td class="time-cell duration-col" {
+                            (&row.duration_display)
                         }
                     }
                 }
@@ -208,59 +454,104 @@ fn render_live_jobs_table(jobs: &[Job], namespace: &str) -> Markup {
     }
 }
 
-fn render_archived_jobs_table(jobs: &[ArchivedJob]) -> Markup {
-    html! {
-        table class="jt-table" {
-            thead {
-                tr {
-                    th { "Name" }
-                    th { "Status" }
-                    th { "Started" }
-                    th { "Completed" }
-                    th { "Duration" }
-                }
-            }
-            tbody {
-                @if jobs.is_empty() {
-                    tr {
-                        td colspan="5" class="empty-state" {
-                            "No archived jobs yet."
-                        }
-                    }
-                }
-                @for job in jobs {
-                    tr {
-                        td class="jt-name" {
-                            a href=(format!("/jobs/{}/{}", job.namespace, job.name)) { (&job.name) }
-                        }
-                        td {
-                            @let badge_class = match job.status.as_str() {
-                                "Succeeded" => "success",
-                                "Failed" => "danger",
-                                "Running" => "info",
-                                _ => "muted",
-                            };
-                            span class=(format!("badge badge-{}", badge_class)) { (job.status) }
-                        }
-                        td class="time-cell" {
-                            @if let Some(t) = &job.start_time {
-                                (t)
-                            }
-                        }
-                        td class="time-cell" {
-                            @if let Some(t) = &job.completion_time {
-                                (t)
-                            }
-                        }
-                        td class="time-cell" {
-                            @if let Some(d) = job.duration_seconds {
-                                (format_duration(d))
-                            }
-                        }
-                    }
-                }
+fn load_live_test_results(
+    job_name: &str,
+    namespace: &str,
+    pool: &Pool<SqliteConnectionManager>,
+) -> Option<TestResultSummary> {
+    let conn = pool.get().ok()?;
+    let content = crate::db::job_output::get(job_name, namespace, "test-results.xml", &conn)
+        .ok()
+        .flatten()?;
+    let xml = String::from_utf8(content).ok()?;
+    let suites = super::junit::parse_junit_xml(&xml)?;
+    Some(TestResultSummary {
+        all_passed: suites.all_passed(),
+        failures: suites.total_failures() + suites.total_errors(),
+    })
+}
+
+fn load_live_snapshot_status(
+    job_name: &str,
+    namespace: &str,
+    pool: &Pool<SqliteConnectionManager>,
+) -> Option<String> {
+    let conn = pool.get().ok()?;
+    crate::db::job_output::get_string(job_name, namespace, "_snapshot_status", &conn)
+}
+
+fn is_terminal(job: &Job) -> bool {
+    let status = match job.status.as_ref() {
+        Some(s) => s,
+        None => return false,
+    };
+    if status.completion_time.is_some() {
+        return true;
+    }
+    if let Some(conditions) = &status.conditions {
+        for c in conditions {
+            if c.type_ == "Failed" && c.status == "True" {
+                return true;
             }
         }
+    }
+    false
+}
+
+/// Format a UTC datetime as timeago (e.g. "just now", "5 minutes ago", "2 days ago").
+fn timeago(dt: &DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let delta = now.signed_duration_since(*dt);
+    let secs = delta.num_seconds();
+
+    if secs < 0 {
+        return "just now".to_string();
+    }
+    if secs < 60 {
+        return "just now".to_string();
+    }
+    let mins = secs / 60;
+    if mins == 1 {
+        return "1 minute ago".to_string();
+    }
+    if mins < 60 {
+        return format!("{} minutes ago", mins);
+    }
+    let hours = mins / 60;
+    if hours == 1 {
+        return "1 hour ago".to_string();
+    }
+    if hours < 24 {
+        return format!("{} hours ago", hours);
+    }
+    let days = hours / 24;
+    if days == 1 {
+        return "1 day ago".to_string();
+    }
+    format!("{} days ago", days)
+}
+
+/// Format a UTC datetime as human-readable Eastern time for hover tooltips.
+/// e.g. "March 6th, 2026 9:02:00 PM Eastern"
+fn format_eastern(dt: &DateTime<Utc>) -> String {
+    let eastern = dt.with_timezone(&Eastern);
+    let month = eastern.format("%B").to_string();
+    let day = eastern.format("%-d").to_string().parse::<u32>().unwrap_or(1);
+    let suffix = ordinal_suffix(day);
+    let rest = eastern.format("%-I:%M:%S %p").to_string();
+    let year = eastern.format("%Y").to_string();
+    format!("{} {}{}, {} {} Eastern", month, day, suffix, year, rest)
+}
+
+fn ordinal_suffix(n: u32) -> &'static str {
+    match (n % 10, n % 100) {
+        (1, 11) => "th",
+        (2, 12) => "th",
+        (3, 13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
     }
 }
 
@@ -541,7 +832,13 @@ pub async fn job_template_run(
                     "for f in result.json report.md test-results.xml archive.tar.gz; do ",
                     "[ -f \"/job-output/$f\" ] && curl -sf -X PUT --data-binary \"@/job-output/$f\" ",
                     "\"$JOBFATHER_URL/api/jobs/$JOBFATHER_NAMESPACE/$JOBFATHER_JOB_NAME/output/$f\" || true; ",
-                    "done; exit 0; }; ",
+                    "done; ",
+                    "if [ -d /job-output/test-snapshots ] && [ \"$(ls -A /job-output/test-snapshots 2>/dev/null)\" ]; then ",
+                    "tar czf /tmp/test-snapshots.tar.gz -C /job-output/test-snapshots . && ",
+                    "curl -sf -X PUT --data-binary @/tmp/test-snapshots.tar.gz ",
+                    "\"$JOBFATHER_URL/api/jobs/$JOBFATHER_NAMESPACE/$JOBFATHER_JOB_NAME/output/test-snapshots.tar.gz\" || true; ",
+                    "fi; ",
+                    "exit 0; }; ",
                     "trap upload TERM; ",
                     "while true; do sleep 3600 & wait; done"
                 )],
@@ -574,10 +871,31 @@ pub async fn job_template_run(
     let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     let job_name = format!("{}-{}", name, timestamp);
 
+    // Inherit artifact-sha and config-sha annotations from the JobTemplate
+    let sha_annotations: std::collections::BTreeMap<String, String> = job_template
+        .metadata
+        .annotations
+        .as_ref()
+        .map(|a| {
+            a.iter()
+                .filter(|(k, _)| {
+                    *k == "artifactSha"
+                        || *k == "configSha"
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let job = Job {
         metadata: ObjectMeta {
             name: Some(job_name.clone()),
             namespace: Some(namespace.clone()),
+            annotations: if sha_annotations.is_empty() {
+                None
+            } else {
+                Some(sha_annotations)
+            },
             owner_references: Some(vec![
                 k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
                     api_version: "jobfather.coolkev.com/v1".to_string(),
@@ -685,11 +1003,21 @@ fn job_status(job: &Job) -> (&str, &str) {
         }
     }
 
+    let has_completed_pod = status.succeeded.is_some_and(|n| n > 0)
+        || status.failed.is_some_and(|n| n > 0);
+
     if status.active.is_some_and(|a| a > 0) {
         if status.ready.is_some_and(|r| r > 0) {
             return ("info", "Running");
         }
+        if has_completed_pod {
+            return ("muted", "Cleaning up");
+        }
         return ("muted", "Pending");
+    }
+
+    if has_completed_pod {
+        return ("muted", "Cleaning up");
     }
 
     ("muted", "Pending")

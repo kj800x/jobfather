@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use k8s_openapi::api::batch::v1::Job;
-use kube::{Api, Client};
+use kube::{Api, Client, ResourceExt};
 use prometheus::{
     register_gauge_vec_with_registry, register_gauge_with_registry,
     register_histogram_vec_with_registry, register_histogram_with_registry,
@@ -165,9 +165,9 @@ impl Metrics {
         // Compute longest running job per template from live K8s jobs
         self.update_longest_running(client, job_templates, now).await;
 
-        // Update acceptance metrics from DB (time-since gauges are updated on scrape)
+        // Update acceptance metrics from DB + live K8s jobs (time-since gauges are updated on scrape)
         if let Ok(conn) = pool.get() {
-            self.update_acceptance_metrics(&conn, job_templates);
+            self.update_acceptance_metrics(&conn, client, job_templates).await;
         }
     }
 
@@ -384,13 +384,22 @@ impl Metrics {
         }
     }
 
-    fn update_acceptance_metrics(
+    async fn update_acceptance_metrics(
         &self,
         conn: &r2d2::PooledConnection<SqliteConnectionManager>,
+        client: &Client,
         job_templates: &[JobTemplate],
     ) {
         // Reset test case durations to clear stale entries from renamed/removed tests
         self.test_case_duration_seconds.reset();
+
+        // Fetch all live jobs once for use across all templates
+        let job_api: Api<Job> = Api::all(client.clone());
+        let live_jobs = job_api
+            .list(&kube::api::ListParams::default())
+            .await
+            .map(|l| l.items)
+            .unwrap_or_default();
 
         for jt in job_templates {
             if !jt.is_acceptance_test() {
@@ -399,16 +408,19 @@ impl Metrics {
 
             let ns = jt.metadata.namespace.as_deref().unwrap_or("default");
             let name = jt.metadata.name.as_deref().unwrap_or("unknown");
+            let jt_uid = jt.uid().unwrap_or_default();
 
             // Count consecutive failures (None = DB error, skip update)
-            if let Some(consecutive) = self.count_consecutive_failures(conn, name, ns) {
+            if let Some(consecutive) =
+                self.count_consecutive_failures(conn, name, ns, &jt_uid, &live_jobs)
+            {
                 self.acceptance_consecutive_failures
                     .with_label_values(&[ns, name])
                     .set(consecutive as f64);
             }
 
             // Update test case durations from most recent run with junit XML
-            self.update_test_case_durations(conn, name, ns);
+            self.update_test_case_durations(conn, name, ns, &live_jobs, &jt_uid);
         }
     }
 
@@ -417,9 +429,12 @@ impl Metrics {
         conn: &r2d2::PooledConnection<SqliteConnectionManager>,
         jt_name: &str,
         jt_namespace: &str,
+        jt_uid: &str,
+        live_jobs: &[Job],
     ) -> Option<u64> {
+        // Collect results from archived jobs
         let mut stmt = match conn.prepare(
-            "SELECT status, output_test_results_xml, snapshot_status
+            "SELECT status, output_test_results_xml, snapshot_status, start_time
              FROM archived_job
              WHERE job_template_name = ?1 AND job_template_namespace = ?2
              ORDER BY start_time DESC
@@ -437,20 +452,81 @@ impl Metrics {
             }
         };
 
-        let rows: Vec<(String, Option<String>, Option<String>)> = stmt
+        let mut results: Vec<(String, Option<String>, Option<String>, String)> = stmt
             .query_map(params![jt_name, jt_namespace], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })
             .ok()
             .map(|r| r.flatten().collect())
             .unwrap_or_default();
 
+        // Collect results from live completed jobs owned by this template
+        for job in live_jobs {
+            let owner = job
+                .metadata
+                .owner_references
+                .as_ref()
+                .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"));
+            let Some(owner) = owner else { continue };
+            if owner.uid != jt_uid {
+                continue;
+            }
+
+            // Only include completed jobs
+            let Some(completion_time) = job
+                .status
+                .as_ref()
+                .and_then(|s| s.completion_time.as_ref())
+            else {
+                continue;
+            };
+
+            let start_time = job
+                .status
+                .as_ref()
+                .and_then(|s| s.start_time.as_ref())
+                .map(|t| t.0.to_rfc3339())
+                .unwrap_or_else(|| completion_time.0.to_rfc3339());
+
+            let job_name = job.metadata.name.as_deref().unwrap_or("");
+            let job_ns = job.metadata.namespace.as_deref().unwrap_or("default");
+
+            // Determine status from K8s conditions
+            let status = job
+                .status
+                .as_ref()
+                .and_then(|s| s.conditions.as_ref())
+                .and_then(|conds| {
+                    for c in conds {
+                        if c.type_ == "Complete" && c.status == "True" {
+                            return Some("Succeeded".to_string());
+                        }
+                        if c.type_ == "Failed" && c.status == "True" {
+                            return Some("Failed".to_string());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            // Load junit XML and snapshot status from job_output table
+            let junit_xml = crate::db::job_output::get_string(job_name, job_ns, "test-results.xml", conn);
+            let snapshot_status =
+                crate::db::job_output::get_string(job_name, job_ns, "_snapshot_status", conn);
+
+            results.push((status, junit_xml, snapshot_status, start_time));
+        }
+
+        // Sort by start_time descending (most recent first)
+        results.sort_by(|a, b| b.3.cmp(&a.3));
+
         let mut count: u64 = 0;
-        for (status, junit_xml, snapshot_status) in &rows {
+        for (status, junit_xml, snapshot_status, _) in &results {
             if is_acceptance_failure(status, junit_xml.as_deref(), snapshot_status.as_deref()) {
                 count += 1;
             } else {
@@ -465,20 +541,68 @@ impl Metrics {
         conn: &r2d2::PooledConnection<SqliteConnectionManager>,
         jt_name: &str,
         jt_namespace: &str,
+        live_jobs: &[Job],
+        jt_uid: &str,
     ) {
-        // Get the most recent junit XML
-        let xml: Option<String> = conn
+        // Find the most recent junit XML across archived and live jobs
+        let archived_xml: Option<(String, String)> = conn
             .query_row(
-                "SELECT output_test_results_xml FROM archived_job
+                "SELECT output_test_results_xml, start_time FROM archived_job
                  WHERE job_template_name = ?1 AND job_template_namespace = ?2
                    AND output_test_results_xml IS NOT NULL
                  ORDER BY start_time DESC LIMIT 1",
                 params![jt_name, jt_namespace],
-                |row| row.get(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .ok();
 
-        let Some(xml) = xml else { return };
+        // Check live completed jobs for more recent junit XML
+        let mut best_xml: Option<String> = None;
+        let mut best_start: Option<String> = None;
+
+        if let Some((xml, start)) = &archived_xml {
+            best_xml = Some(xml.clone());
+            best_start = Some(start.clone());
+        }
+
+        for job in live_jobs {
+            let owner = job
+                .metadata
+                .owner_references
+                .as_ref()
+                .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"));
+            let Some(owner) = owner else { continue };
+            if owner.uid != jt_uid {
+                continue;
+            }
+            // Only completed jobs
+            if job.status.as_ref().and_then(|s| s.completion_time.as_ref()).is_none() {
+                continue;
+            }
+
+            let start_time = job
+                .status
+                .as_ref()
+                .and_then(|s| s.start_time.as_ref())
+                .map(|t| t.0.to_rfc3339());
+
+            let job_name = job.metadata.name.as_deref().unwrap_or("");
+            let job_ns = job.metadata.namespace.as_deref().unwrap_or("default");
+
+            if let Some(xml) = crate::db::job_output::get_string(job_name, job_ns, "test-results.xml", conn) {
+                let is_newer = match (&start_time, &best_start) {
+                    (Some(live_st), Some(best_st)) => live_st > best_st,
+                    (Some(_), None) => true,
+                    _ => false,
+                };
+                if is_newer {
+                    best_xml = Some(xml);
+                    best_start = start_time;
+                }
+            }
+        }
+
+        let Some(xml) = best_xml else { return };
         let Some(suites) = parse_junit_xml(&xml) else {
             return;
         };

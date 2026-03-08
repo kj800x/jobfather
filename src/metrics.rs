@@ -603,7 +603,7 @@ fn completed_jobs_for_template(
 }
 
 /// Determine if an acceptance test run counts as a failure.
-fn is_acceptance_failure(
+pub(crate) fn is_acceptance_failure(
     status: &str,
     junit_xml: Option<&str>,
     snapshot_status: Option<&str>,

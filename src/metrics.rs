@@ -275,6 +275,27 @@ impl Metrics {
         client: &Client,
         now: DateTime<Utc>,
     ) {
+        // Build set of currently-existing templates to filter out deleted ones
+        let jt_api: Api<JobTemplate> = Api::all(client.clone());
+        let current_templates: std::collections::HashSet<(String, String)> = jt_api
+            .list(&kube::api::ListParams::default())
+            .await
+            .map(|list| {
+                list.items
+                    .iter()
+                    .filter_map(|jt| {
+                        let name = jt.metadata.name.as_deref()?;
+                        let ns = jt.metadata.namespace.as_deref()?;
+                        Some((name.to_string(), ns.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Reset before recomputing so deleted templates disappear
+        self.time_since_last_completion_seconds.reset();
+        self.time_since_last_success_seconds.reset();
+
         // Collect last completion times from archived jobs
         let mut last_completion: std::collections::HashMap<(String, String), DateTime<Utc>> =
             std::collections::HashMap::new();
@@ -294,6 +315,9 @@ impl Metrics {
                 ))
             }) {
                 for row in rows.flatten() {
+                    if !current_templates.contains(&(row.0.clone(), row.1.clone())) {
+                        continue;
+                    }
                     if let Some(time_str) = row.2
                         && let Ok(time) = time_str.parse::<DateTime<Utc>>() {
                             last_completion.insert((row.0, row.1), time);
@@ -315,6 +339,9 @@ impl Metrics {
                 ))
             }) {
                 for row in rows.flatten() {
+                    if !current_templates.contains(&(row.0.clone(), row.1.clone())) {
+                        continue;
+                    }
                     if let Some(time_str) = row.2
                         && let Ok(time) = time_str.parse::<DateTime<Utc>>() {
                             last_success.insert((row.0, row.1), time);
@@ -335,6 +362,10 @@ impl Metrics {
 
                 let ns = job.metadata.namespace.as_deref().unwrap_or("default");
                 let key = (owner.name.clone(), ns.to_string());
+
+                if !current_templates.contains(&key) {
+                    continue;
+                }
 
                 // Check if job has a completion time
                 let comp_time = job
@@ -390,8 +421,9 @@ impl Metrics {
         client: &Client,
         job_templates: &[JobTemplate],
     ) {
-        // Reset test case durations to clear stale entries from renamed/removed tests
+        // Reset before recomputing so deleted templates disappear
         self.test_case_duration_seconds.reset();
+        self.acceptance_consecutive_failures.reset();
 
         // Fetch all live jobs once for use across all templates
         let job_api: Api<Job> = Api::all(client.clone());

@@ -715,7 +715,7 @@ fn is_terminal(job: &Job) -> bool {
     false
 }
 
-async fn fetch_live_logs(client: &Client, namespace: &str, job_name: &str) -> Option<String> {
+pub(crate) async fn fetch_live_logs(client: &Client, namespace: &str, job_name: &str) -> Option<String> {
     let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), namespace);
     let pods = pod_api
         .list(&kube::api::ListParams::default().labels(&format!("job-name={}", job_name)))

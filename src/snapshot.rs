@@ -133,6 +133,9 @@ pub fn compare(
     SnapshotDiff { files }
 }
 
+#[derive(Serialize)]
+#[serde(tag = "type", content = "text")]
+#[serde(rename_all = "snake_case")]
 pub enum DiffLine {
     Context(String),
     Added(String),

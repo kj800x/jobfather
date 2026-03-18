@@ -9,6 +9,8 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use serde::Deserialize;
 
+const DEFAULT_JOB_LIMIT: usize = 100;
+
 use crate::db::ArchivedJob;
 use crate::kubernetes::JobTemplate;
 
@@ -55,7 +57,7 @@ pub async fn job_template_detail_page(
                         span class="detail-title" { (namespace) "/" (name) }
                     }
                     div class="detail-content"
-                        hx-get=(format!("/job-templates/{}/{}/fragment", namespace, name))
+                        hx-get=(format!("/job-templates/{}/{}/fragment?limit={}", namespace, name, DEFAULT_JOB_LIMIT))
                         hx-trigger="load, every 5s"
                         hx-swap="morph:innerHTML" {
                         div { "Loading..." }
@@ -71,13 +73,20 @@ pub async fn job_template_detail_page(
         .body(markup.into_string())
 }
 
+#[derive(Deserialize)]
+pub struct FragmentQuery {
+    limit: Option<usize>,
+}
+
 #[get("/job-templates/{namespace}/{name}/fragment")]
 pub async fn job_template_detail_fragment(
     path: web::Path<(String, String)>,
+    query: web::Query<FragmentQuery>,
     client: web::Data<Client>,
     pool: web::Data<Pool<SqliteConnectionManager>>,
 ) -> impl Responder {
     let (namespace, name) = path.into_inner();
+    let limit = query.limit.unwrap_or(DEFAULT_JOB_LIMIT);
 
     // Fetch the JobTemplate itself
     let jt_api: Api<JobTemplate> = Api::namespaced(client.get_ref().clone(), &namespace);
@@ -223,6 +232,9 @@ pub async fn job_template_detail_fragment(
     // Sort by start time, newest first
     rows.sort_by(|a, b| b.start_time.cmp(&a.start_time));
 
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+
     let jt_annotations = job_template.metadata.annotations.as_ref();
     let jt_artifact_sha = jt_annotations
         .and_then(|a| a.get("artifactSha"))
@@ -289,6 +301,19 @@ pub async fn job_template_detail_fragment(
 
         h3 class="section-title" { "Jobs" }
         (render_combined_table(&rows, is_acceptance_test, &name))
+        @if has_more {
+            @let next_limit = limit + DEFAULT_JOB_LIMIT;
+            @let fragment_url = format!("/job-templates/{}/{}/fragment?limit={}", namespace, name, next_limit);
+            div class="load-more-container" {
+                button class="btn btn-secondary"
+                    onclick=(format!(
+                        "let c=this.closest('.detail-content'); c.setAttribute('hx-get','{}'); htmx.trigger(c,'load')",
+                        fragment_url
+                    )) {
+                    "Load more"
+                }
+            }
+        }
     };
 
     HttpResponse::Ok()

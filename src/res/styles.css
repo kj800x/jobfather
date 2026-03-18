@@ -158,6 +158,11 @@ a:hover {
   color: var(--secondary-text);
 }
 
+.load-more-container {
+  text-align: center;
+  padding: 16px 0;
+}
+
 /* Badges */
 .badge {
   display: inline-block;

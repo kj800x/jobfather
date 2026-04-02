@@ -21,6 +21,8 @@ pub struct Metrics {
     pub time_since_last_completion_seconds: GaugeVec,
     pub time_since_last_success_seconds: GaugeVec,
     pub acceptance_consecutive_failures: GaugeVec,
+    pub job_consecutive_failures: GaugeVec,
+    pub job_last_status: GaugeVec,
     pub test_case_duration_seconds: GaugeVec,
     pub scheduler_tick_duration_seconds: Histogram,
     pub reconciler_tracked_jobs: Gauge,
@@ -89,6 +91,26 @@ impl Metrics {
         )
         .expect("Failed to register acceptance_consecutive_failures");
 
+        let job_consecutive_failures = register_gauge_vec_with_registry!(
+            Opts::new(
+                "jobfather_job_consecutive_failures",
+                "Number of consecutive failed runs for a job template (0 = last run succeeded)"
+            ),
+            &["namespace", "job_template"],
+            registry
+        )
+        .expect("Failed to register job_consecutive_failures");
+
+        let job_last_status = register_gauge_vec_with_registry!(
+            Opts::new(
+                "jobfather_job_last_status",
+                "One-hot metric for the last run status of each job template (1 = current status)"
+            ),
+            &["namespace", "job_template", "status"],
+            registry
+        )
+        .expect("Failed to register job_last_status");
+
         let test_case_duration_seconds = register_gauge_vec_with_registry!(
             Opts::new(
                 "jobfather_test_case_duration_seconds",
@@ -125,6 +147,8 @@ impl Metrics {
             time_since_last_completion_seconds,
             time_since_last_success_seconds,
             acceptance_consecutive_failures,
+            job_consecutive_failures,
+            job_last_status,
             test_case_duration_seconds,
             scheduler_tick_duration_seconds,
             reconciler_tracked_jobs,
@@ -424,6 +448,8 @@ impl Metrics {
         // Reset before recomputing so deleted templates disappear
         self.test_case_duration_seconds.reset();
         self.acceptance_consecutive_failures.reset();
+        self.job_consecutive_failures.reset();
+        self.job_last_status.reset();
 
         // Fetch all live jobs once for use across all templates
         let job_api: Api<Job> = Api::all(client.clone());
@@ -434,10 +460,6 @@ impl Metrics {
             .unwrap_or_default();
 
         for jt in job_templates {
-            if !jt.is_acceptance_test() {
-                continue;
-            }
-
             let ns = jt.metadata.namespace.as_deref().unwrap_or("default");
             let name = jt.metadata.name.as_deref().unwrap_or("unknown");
             let jt_uid = jt.uid().unwrap_or_default();
@@ -448,7 +470,35 @@ impl Metrics {
                 continue;
             };
 
-            // Count consecutive failures
+            // Job consecutive failures (termination status) — for all templates
+            let mut job_consecutive: u64 = 0;
+            for r in &results {
+                if r.status != "Succeeded" {
+                    job_consecutive += 1;
+                } else {
+                    break;
+                }
+            }
+            self.job_consecutive_failures
+                .with_label_values(&[ns, name])
+                .set(job_consecutive as f64);
+
+            // Last run status one-hot
+            if let Some(last) = results.first() {
+                for status in &["Succeeded", "Failed", "Error", "Unknown"] {
+                    let value = if *status == last.status { 1.0 } else { 0.0 };
+                    self.job_last_status
+                        .with_label_values(&[ns, name, status])
+                        .set(value);
+                }
+            }
+
+            // Acceptance-specific metrics only for AT templates
+            if !jt.is_acceptance_test() {
+                continue;
+            }
+
+            // Count consecutive acceptance failures
             let mut consecutive: u64 = 0;
             for r in &results {
                 if is_acceptance_failure(

@@ -39,7 +39,9 @@ Prometheus metrics are served at `/api/metrics`. Key metrics:
 - `jobfather_job_completions_total` — counter by namespace/template/status
 - `jobfather_job_longest_running_seconds` — gauge per template
 - `jobfather_time_since_last_completion_seconds` / `..._success_seconds` — gauges updated at scrape time
-- `jobfather_acceptance_consecutive_failures` — gauge for acceptance test templates
+- `jobfather_acceptance_consecutive_failures` — gauge for acceptance test templates (considers AT result, not just termination)
+- `jobfather_job_consecutive_failures` — gauge of consecutive non-Succeeded runs per template (all templates)
+- `jobfather_job_last_status` — one-hot gauge with `status` label for each template's most recent run
 - `jobfather_test_case_duration_seconds` — gauge per test case from JUnit XML
 - `jobfather_scheduler_tick_duration_seconds` — histogram of scheduler loop iterations
 - `jobfather_reconciler_tracked_jobs` — gauge of UIDs in the reconciler's metrics tracking set

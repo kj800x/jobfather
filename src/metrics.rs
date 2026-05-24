@@ -22,6 +22,7 @@ pub struct Metrics {
     pub time_since_last_success_seconds: GaugeVec,
     pub acceptance_consecutive_failures: GaugeVec,
     pub job_consecutive_failures: GaugeVec,
+    pub job_max_permitted_consecutive_failures: GaugeVec,
     pub job_last_status: GaugeVec,
     pub test_case_duration_seconds: GaugeVec,
     pub scheduler_tick_duration_seconds: Histogram,
@@ -101,6 +102,16 @@ impl Metrics {
         )
         .expect("Failed to register job_consecutive_failures");
 
+        let job_max_permitted_consecutive_failures = register_gauge_vec_with_registry!(
+            Opts::new(
+                "jobfather_job_max_permitted_consecutive_failures",
+                "Maximum number of consecutive failures permitted before alerting (from JobTemplate spec; 0 if unset)"
+            ),
+            &["namespace", "job_template"],
+            registry
+        )
+        .expect("Failed to register job_max_permitted_consecutive_failures");
+
         let job_last_status = register_gauge_vec_with_registry!(
             Opts::new(
                 "jobfather_job_last_status",
@@ -148,6 +159,7 @@ impl Metrics {
             time_since_last_success_seconds,
             acceptance_consecutive_failures,
             job_consecutive_failures,
+            job_max_permitted_consecutive_failures,
             job_last_status,
             test_case_duration_seconds,
             scheduler_tick_duration_seconds,
@@ -449,6 +461,7 @@ impl Metrics {
         self.test_case_duration_seconds.reset();
         self.acceptance_consecutive_failures.reset();
         self.job_consecutive_failures.reset();
+        self.job_max_permitted_consecutive_failures.reset();
         self.job_last_status.reset();
 
         // Fetch all live jobs once for use across all templates
@@ -463,6 +476,10 @@ impl Metrics {
             let ns = jt.metadata.namespace.as_deref().unwrap_or("default");
             let name = jt.metadata.name.as_deref().unwrap_or("unknown");
             let jt_uid = jt.uid().unwrap_or_default();
+
+            self.job_max_permitted_consecutive_failures
+                .with_label_values(&[ns, name])
+                .set(jt.spec.max_permitted_consecutive_failures.unwrap_or(0) as f64);
 
             let Some(results) =
                 completed_jobs_for_template(conn, name, ns, &jt_uid, &live_jobs)

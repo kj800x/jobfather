@@ -25,6 +25,13 @@ pub struct JobTemplateSpec {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "cleanupAfter")]
     pub cleanup_after: Option<String>,
 
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "maxPermittedConsecutiveFailures"
+    )]
+    pub max_permitted_consecutive_failures: Option<u64>,
+
     pub spec: serde_json::Value,
 }
 

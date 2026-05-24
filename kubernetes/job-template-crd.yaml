@@ -24,6 +24,10 @@ spec:
                 cleanupAfter:
                   type: string
                   description: "Duration after which completed jobs are cleaned up (e.g. '1h30m', '7d', '30m')"
+                maxPermittedConsecutiveFailures:
+                  type: integer
+                  minimum: 0
+                  description: "Maximum number of consecutive failures permitted before alerting; used by Grafana to suppress alerts for jobs that are tolerant of intermittent failure"
                 spec:
                   type: object
                   description: "PodSpec for the job pod"

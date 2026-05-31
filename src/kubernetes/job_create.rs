@@ -28,62 +28,62 @@ pub fn build_job(
     }
 
     // Modify the first container: add volume mount, optionally override args and env
-    if let Some(containers) = pod_spec.get_mut("containers").and_then(|c| c.as_array_mut())
-        && let Some(container) = containers.first_mut() {
-            // Add /job-output volume mount
-            if container.get("volumeMounts").is_none() {
-                container["volumeMounts"] = serde_json::json!([]);
-            }
-            if let Some(mounts) = container["volumeMounts"].as_array_mut() {
-                mounts.push(
-                    serde_json::json!({"name": "job-output", "mountPath": "/job-output"}),
-                );
-            }
-
-            // Override args if provided
-            if let Some(ref override_args) = args
-                && (!override_args.is_empty()
-                    || job_template
-                        .spec
-                        .spec
-                        .get("containers")
-                        .and_then(|c| c.as_array())
-                        .and_then(|a| a.first())
-                        .and_then(|c| c.get("args"))
-                        .is_some())
-                {
-                    container["args"] =
-                        serde_json::to_value(override_args).unwrap_or_default();
-                }
-
-            // Override env if provided
-            if let Some(ref override_env) = env {
-                let original_env = container
-                    .get("env")
-                    .and_then(|e| e.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-
-                let mut new_env: Vec<serde_json::Value> = Vec::new();
-
-                // Preserve all valueFrom entries as-is
-                for entry in &original_env {
-                    if entry.get("valueFrom").is_some() {
-                        new_env.push(entry.clone());
-                    }
-                }
-
-                // Add the editable env vars
-                for (name, value) in override_env {
-                    new_env.push(serde_json::json!({
-                        "name": name,
-                        "value": value,
-                    }));
-                }
-
-                container["env"] = serde_json::to_value(&new_env).unwrap_or_default();
-            }
+    if let Some(containers) = pod_spec
+        .get_mut("containers")
+        .and_then(|c| c.as_array_mut())
+        && let Some(container) = containers.first_mut()
+    {
+        // Add /job-output volume mount
+        if container.get("volumeMounts").is_none() {
+            container["volumeMounts"] = serde_json::json!([]);
         }
+        if let Some(mounts) = container["volumeMounts"].as_array_mut() {
+            mounts.push(serde_json::json!({"name": "job-output", "mountPath": "/job-output"}));
+        }
+
+        // Override args if provided
+        if let Some(ref override_args) = args
+            && (!override_args.is_empty()
+                || job_template
+                    .spec
+                    .spec
+                    .get("containers")
+                    .and_then(|c| c.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|c| c.get("args"))
+                    .is_some())
+        {
+            container["args"] = serde_json::to_value(override_args).unwrap_or_default();
+        }
+
+        // Override env if provided
+        if let Some(ref override_env) = env {
+            let original_env = container
+                .get("env")
+                .and_then(|e| e.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut new_env: Vec<serde_json::Value> = Vec::new();
+
+            // Preserve all valueFrom entries as-is
+            for entry in &original_env {
+                if entry.get("valueFrom").is_some() {
+                    new_env.push(entry.clone());
+                }
+            }
+
+            // Add the editable env vars
+            for (name, value) in override_env {
+                new_env.push(serde_json::json!({
+                    "name": name,
+                    "value": value,
+                }));
+            }
+
+            container["env"] = serde_json::to_value(&new_env).unwrap_or_default();
+        }
+    }
 
     // Inject job-output sidecar container
     let jobfather_url = std::env::var("JOBFATHER_URL")

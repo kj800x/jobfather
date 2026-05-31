@@ -6,13 +6,13 @@ use chrono::Utc;
 use futures::StreamExt;
 use k8s_openapi::api::batch::v1::Job;
 use kube::api::{DeleteParams, LogParams};
-use kube::runtime::controller::Action;
 use kube::runtime::Controller;
+use kube::runtime::controller::Action;
 use kube::{Api, Client, ResourceExt};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 
-use crate::db::{archived_job::ArchivedJobEgg, ArchivedJob};
+use crate::db::{ArchivedJob, archived_job::ArchivedJobEgg};
 use crate::kubernetes::JobTemplate;
 use crate::metrics::Metrics;
 
@@ -73,7 +73,10 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
     // Record completion metrics once per job
     let job_uid = job.metadata.uid.clone().unwrap_or_default();
     {
-        let mut recorded = ctx.metrics_recorded.lock().unwrap_or_else(|e| e.into_inner());
+        let mut recorded = ctx
+            .metrics_recorded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if recorded.insert(job_uid.clone()) {
             let status = job_status_string(&job);
             let duration_seconds = job
@@ -118,7 +121,9 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
 
     if elapsed < cleanup_duration {
         // Not yet time to clean up — requeue for when it's due
-        let remaining = (cleanup_duration - elapsed).to_std().unwrap_or(Duration::from_secs(30));
+        let remaining = (cleanup_duration - elapsed)
+            .to_std()
+            .unwrap_or(Duration::from_secs(30));
         return Ok(Action::requeue(remaining));
     }
 
@@ -146,22 +151,29 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
     // Read snapshot status computed at upload time (not recomputed here)
     let (snapshot_status, snapshot_diff_json, snapshot_baseline_id) = match ctx.pool.get() {
         Ok(conn) => {
-            let status = crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_status", &conn);
-            let diff = crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_diff_json", &conn);
-            let baseline_id = crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_baseline_id", &conn)
-                .and_then(|s| s.parse::<i64>().ok());
+            let status =
+                crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_status", &conn);
+            let diff = crate::db::job_output::get_string(
+                &job_name,
+                &namespace,
+                "_snapshot_diff_json",
+                &conn,
+            );
+            let baseline_id = crate::db::job_output::get_string(
+                &job_name,
+                &namespace,
+                "_snapshot_baseline_id",
+                &conn,
+            )
+            .and_then(|s| s.parse::<i64>().ok());
             (status, diff, baseline_id)
         }
         Err(_) => (None, None, None),
     };
 
     let annotations = job.metadata.annotations.as_ref();
-    let artifact_sha = annotations
-        .and_then(|a| a.get("artifactSha"))
-        .cloned();
-    let config_sha = annotations
-        .and_then(|a| a.get("configSha"))
-        .cloned();
+    let artifact_sha = annotations.and_then(|a| a.get("artifactSha")).cloned();
+    let config_sha = annotations.and_then(|a| a.get("configSha")).cloned();
 
     let egg = ArchivedJobEgg {
         name: job_name.clone(),
@@ -219,7 +231,11 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         recorded.remove(&job_uid);
     }
 
-    log::info!("Successfully archived and deleted job {}/{}", namespace, job_name);
+    log::info!(
+        "Successfully archived and deleted job {}/{}",
+        namespace,
+        job_name
+    );
     Ok(Action::await_change())
 }
 
@@ -240,10 +256,12 @@ fn terminal_time(job: &Job) -> Option<chrono::DateTime<Utc>> {
     // For failed jobs, look at conditions
     if let Some(conditions) = &status.conditions {
         for c in conditions {
-            if c.type_ == "Failed" && c.status == "True"
-                && let Some(t) = &c.last_transition_time {
-                    return Some(t.0);
-                }
+            if c.type_ == "Failed"
+                && c.status == "True"
+                && let Some(t) = &c.last_transition_time
+            {
+                return Some(t.0);
+            }
         }
     }
 
@@ -279,7 +297,12 @@ async fn fetch_job_logs(client: &Client, namespace: &str, job_name: &str) -> Opt
     {
         Ok(list) => list.items,
         Err(e) => {
-            log::warn!("Failed to list pods for job {}/{}: {}", namespace, job_name, e);
+            log::warn!(
+                "Failed to list pods for job {}/{}: {}",
+                namespace,
+                job_name,
+                e
+            );
             return None;
         }
     };
@@ -288,10 +311,13 @@ async fn fetch_job_logs(client: &Client, namespace: &str, job_name: &str) -> Opt
     for pod in &pods {
         let pod_name = pod.name_any();
         match pod_api
-            .logs(&pod_name, &LogParams {
-                timestamps: true,
-                ..Default::default()
-            })
+            .logs(
+                &pod_name,
+                &LogParams {
+                    timestamps: true,
+                    ..Default::default()
+                },
+            )
             .await
         {
             Ok(log_str) => {
@@ -336,7 +362,10 @@ pub fn parse_duration(s: &str) -> chrono::Duration {
     }
 
     if total_seconds == 0 {
-        log::warn!("Invalid or empty cleanupAfter value '{}', defaulting to 30m", s);
+        log::warn!(
+            "Invalid or empty cleanupAfter value '{}', defaulting to 30m",
+            s
+        );
         chrono::Duration::minutes(30)
     } else {
         chrono::Duration::seconds(total_seconds)

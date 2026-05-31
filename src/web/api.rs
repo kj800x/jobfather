@@ -1,4 +1,4 @@
-use actix_web::{get, post, web, HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, get, post, web};
 use k8s_openapi::api::batch::v1::Job;
 use kube::api::PostParams;
 use kube::{Api, Client, ResourceExt};
@@ -245,9 +245,7 @@ fn case_to_api(tc: &super::junit::TestCase) -> ApiTestCase {
         super::junit::TestCaseStatus::Error { message, body } => {
             ("error", message.as_deref(), body.as_deref())
         }
-        super::junit::TestCaseStatus::Skipped { message } => {
-            ("skipped", message.as_deref(), None)
-        }
+        super::junit::TestCaseStatus::Skipped { message } => ("skipped", message.as_deref(), None),
     };
     ApiTestCase {
         name: tc.name.clone(),
@@ -282,8 +280,8 @@ pub(crate) async fn list_jobs_for_template_inner(
                     .is_some_and(|refs| refs.iter().any(|r| r.uid == *uid));
                 if owned {
                     let mut api_job = live_job_to_api(job);
-                    if is_terminal(job) {
-                        if let Ok(conn) = pool.get() {
+                    if is_terminal(job)
+                        && let Ok(conn) = pool.get() {
                             api_job.snapshot_status = crate::db::job_output::get_string(
                                 &api_job.name,
                                 namespace,
@@ -291,20 +289,18 @@ pub(crate) async fn list_jobs_for_template_inner(
                                 &conn,
                             );
                         }
-                    }
                     jobs.push(api_job);
                 }
             }
         }
     }
 
-    if let Ok(conn) = pool.get() {
-        if let Ok(archived) = ArchivedJob::get_by_job_template(name, namespace, &conn) {
+    if let Ok(conn) = pool.get()
+        && let Ok(archived) = ArchivedJob::get_by_job_template(name, namespace, &conn) {
             for job in &archived {
                 jobs.push(archived_job_to_api(job));
             }
         }
-    }
 
     jobs.sort_by(|a, b| b.start_time.cmp(&a.start_time));
     jobs
@@ -319,20 +315,18 @@ pub(crate) async fn get_job_inner(
     let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);
     if let Ok(job) = job_api.get(name).await {
         let mut api_job = live_job_to_api(&job);
-        if is_terminal(&job) {
-            if let Ok(conn) = pool.get() {
+        if is_terminal(&job)
+            && let Ok(conn) = pool.get() {
                 api_job.snapshot_status =
                     crate::db::job_output::get_string(name, namespace, "_snapshot_status", &conn);
             }
-        }
         return Some(api_job);
     }
 
-    if let Ok(conn) = pool.get() {
-        if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
+    if let Ok(conn) = pool.get()
+        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
             return Some(archived_job_to_api(&job));
         }
-    }
 
     None
 }
@@ -351,8 +345,8 @@ pub(crate) async fn get_job_logs_inner(
             .unwrap_or_default());
     }
 
-    if let Ok(conn) = pool.get() {
-        if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
+    if let Ok(conn) = pool.get()
+        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
             let text = job.logs.unwrap_or_default();
             return Ok(match tail {
                 Some(n) if n > 0 => {
@@ -363,7 +357,6 @@ pub(crate) async fn get_job_logs_inner(
                 _ => text,
             });
         }
-    }
 
     Err(format!("Job {}/{} not found", namespace, name))
 }
@@ -379,15 +372,14 @@ pub(crate) async fn get_job_events_inner(
         return crate::kubernetes::events::fetch_job_events(client, namespace, &job).await;
     }
 
-    if let Ok(conn) = pool.get() {
-        if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
+    if let Ok(conn) = pool.get()
+        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
             return job
                 .events_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str(json).ok())
                 .unwrap_or_default();
         }
-    }
 
     Vec::new()
 }
@@ -437,11 +429,9 @@ pub(crate) fn get_job_output_inner(
     if let Some(content) = crate::db::job_output::get(name, namespace, filename, &conn)
         .ok()
         .flatten()
-    {
-        if let Ok(text) = String::from_utf8(content) {
+        && let Ok(text) = String::from_utf8(content) {
             return Ok(text);
         }
-    }
 
     if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
         let text = match filename {
@@ -466,19 +456,15 @@ pub(crate) fn get_snapshot_diff_inner(
 
     if let Some(diff_json) =
         crate::db::job_output::get_string(name, namespace, "_snapshot_diff_json", &conn)
-    {
-        if let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(&diff_json) {
+        && let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(&diff_json) {
             return Some(build_snapshot_diff_response(&diff, name, namespace, pool));
         }
-    }
 
-    if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
-        if let Some(diff_json) = &job.snapshot_diff_json {
-            if let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(diff_json) {
+    if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn)
+        && let Some(diff_json) = &job.snapshot_diff_json
+            && let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(diff_json) {
                 return Some(build_snapshot_diff_response(&diff, name, namespace, pool));
             }
-        }
-    }
 
     None
 }
@@ -530,7 +516,7 @@ fn build_snapshot_diff_response(
             return SnapshotDiffResponse {
                 diff: diff.clone(),
                 json_diffs,
-            }
+            };
         }
     };
 
@@ -544,8 +530,8 @@ fn build_snapshot_diff_response(
                 .and_then(|j| j.output_test_snapshots)
         });
 
-    if let Some(tarball) = tarball {
-        if let Ok(current) = crate::snapshot::extract_tarball(&tarball) {
+    if let Some(tarball) = tarball
+        && let Ok(current) = crate::snapshot::extract_tarball(&tarball) {
             let jt_ref = ArchivedJob::get_by_name_and_namespace(job_name, namespace, &conn)
                 .ok()
                 .flatten();
@@ -580,18 +566,13 @@ fn build_snapshot_diff_response(
             };
 
             for f in &diff.files {
-                if f.path.ends_with(".json")
-                    && f.status == crate::snapshot::FileDiffStatus::Changed
-                {
-                    if let (Some(old), Some(new)) = (baseline.get(&f.path), current.get(&f.path)) {
-                        if let Some(lines) = crate::snapshot::json_diff(old, new) {
+                if f.path.ends_with(".json") && f.status == crate::snapshot::FileDiffStatus::Changed
+                    && let (Some(old), Some(new)) = (baseline.get(&f.path), current.get(&f.path))
+                        && let Some(lines) = crate::snapshot::json_diff(old, new) {
                             json_diffs.insert(f.path.clone(), lines);
                         }
-                    }
-                }
             }
         }
-    }
 
     SnapshotDiffResponse {
         diff: diff.clone(),
@@ -605,8 +586,7 @@ async fn fetch_live_logs_with_tail(
     job_name: &str,
     tail: Option<i64>,
 ) -> Option<String> {
-    let pod_api: Api<k8s_openapi::api::core::v1::Pod> =
-        Api::namespaced(client.clone(), namespace);
+    let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), namespace);
     let pods = pod_api
         .list(&kube::api::ListParams::default().labels(&format!("job-name={}", job_name)))
         .await
@@ -619,11 +599,10 @@ async fn fetch_live_logs_with_tail(
             timestamps: true,
             ..Default::default()
         };
-        if let Some(n) = tail {
-            if n > 0 {
+        if let Some(n) = tail
+            && n > 0 {
                 params.tail_lines = Some(n);
             }
-        }
         if let Ok(log_str) = pod_api.logs(&pod_name, &params).await {
             if pods.items.len() > 1 {
                 all_logs.push(format!("=== Pod: {} ===\n{}", pod_name, log_str));
@@ -728,8 +707,9 @@ pub async fn api_get_test_results(
     let (namespace, name) = path.into_inner();
     match get_test_results_inner(&namespace, &name, &pool) {
         Some(results) => HttpResponse::Ok().json(results),
-        None => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "No test results found"})),
+        None => {
+            HttpResponse::NotFound().json(serde_json::json!({"error": "No test results found"}))
+        }
     }
 }
 
@@ -760,8 +740,9 @@ pub async fn api_get_snapshot_diff(
     let (namespace, name) = path.into_inner();
     match get_snapshot_diff_inner(&namespace, &name, &pool) {
         Some(resp) => HttpResponse::Ok().json(resp),
-        None => HttpResponse::NotFound()
-            .json(serde_json::json!({"error": "No snapshot diff found"})),
+        None => {
+            HttpResponse::NotFound().json(serde_json::json!({"error": "No snapshot diff found"}))
+        }
     }
 }
 
@@ -772,11 +753,18 @@ pub async fn api_run_job(
     body: web::Json<RunJobRequest>,
 ) -> impl Responder {
     let (namespace, name) = path.into_inner();
-    match run_job_inner(&namespace, &name, body.args.clone(), body.env.clone(), &client).await {
+    match run_job_inner(
+        &namespace,
+        &name,
+        body.args.clone(),
+        body.env.clone(),
+        &client,
+    )
+    .await
+    {
         Ok(text) => HttpResponse::Ok()
             .content_type("application/json")
             .body(text),
-        Err(e) => HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": e})),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({"error": e})),
     }
 }

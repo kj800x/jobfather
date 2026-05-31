@@ -2,10 +2,10 @@ use chrono::{DateTime, Utc};
 use k8s_openapi::api::batch::v1::Job;
 use kube::{Api, Client, ResourceExt};
 use prometheus::{
+    Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry,
     register_gauge_vec_with_registry, register_gauge_with_registry,
     register_histogram_vec_with_registry, register_histogram_with_registry,
-    register_int_counter_vec_with_registry, Gauge, GaugeVec, Histogram, HistogramOpts,
-    HistogramVec, IntCounterVec, Opts, Registry,
+    register_int_counter_vec_with_registry,
 };
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -36,7 +36,9 @@ impl Metrics {
                 "jobfather_job_duration_seconds",
                 "Duration of completed jobs in seconds"
             )
-            .buckets(vec![1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0]),
+            .buckets(vec![
+                1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0
+            ]),
             &["namespace", "job_template"],
             registry
         )
@@ -199,11 +201,13 @@ impl Metrics {
         self.job_longest_running_seconds.reset();
 
         // Compute longest running job per template from live K8s jobs
-        self.update_longest_running(client, job_templates, now).await;
+        self.update_longest_running(client, job_templates, now)
+            .await;
 
         // Update acceptance metrics from DB + live K8s jobs (time-since gauges are updated on scrape)
         if let Ok(conn) = pool.get() {
-            self.update_acceptance_metrics(&conn, client, job_templates).await;
+            self.update_acceptance_metrics(&conn, client, job_templates)
+                .await;
         }
     }
 
@@ -342,48 +346,48 @@ impl Metrics {
             "SELECT job_template_name, job_template_namespace, MAX(completion_time)
              FROM archived_job
              GROUP BY job_template_name, job_template_namespace",
-        )
-            && let Ok(rows) = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            }) {
-                for row in rows.flatten() {
-                    if !current_templates.contains(&(row.0.clone(), row.1.clone())) {
-                        continue;
-                    }
-                    if let Some(time_str) = row.2
-                        && let Ok(time) = time_str.parse::<DateTime<Utc>>() {
-                            last_completion.insert((row.0, row.1), time);
-                        }
+        ) && let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                if !current_templates.contains(&(row.0.clone(), row.1.clone())) {
+                    continue;
+                }
+                if let Some(time_str) = row.2
+                    && let Ok(time) = time_str.parse::<DateTime<Utc>>()
+                {
+                    last_completion.insert((row.0, row.1), time);
                 }
             }
+        }
 
         if let Ok(mut stmt) = conn.prepare(
             "SELECT job_template_name, job_template_namespace, MAX(completion_time)
              FROM archived_job
              WHERE status = 'Succeeded'
              GROUP BY job_template_name, job_template_namespace",
-        )
-            && let Ok(rows) = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            }) {
-                for row in rows.flatten() {
-                    if !current_templates.contains(&(row.0.clone(), row.1.clone())) {
-                        continue;
-                    }
-                    if let Some(time_str) = row.2
-                        && let Ok(time) = time_str.parse::<DateTime<Utc>>() {
-                            last_success.insert((row.0, row.1), time);
-                        }
+        ) && let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                if !current_templates.contains(&(row.0.clone(), row.1.clone())) {
+                    continue;
+                }
+                if let Some(time_str) = row.2
+                    && let Ok(time) = time_str.parse::<DateTime<Utc>>()
+                {
+                    last_success.insert((row.0, row.1), time);
                 }
             }
+        }
 
         // Also check live K8s jobs for completion times not yet archived
         let job_api: Api<Job> = Api::all(client.clone());
@@ -481,8 +485,7 @@ impl Metrics {
                 .with_label_values(&[ns, name])
                 .set(jt.spec.max_permitted_consecutive_failures.unwrap_or(0) as f64);
 
-            let Some(results) =
-                completed_jobs_for_template(conn, name, ns, &jt_uid, &live_jobs)
+            let Some(results) = completed_jobs_for_template(conn, name, ns, &jt_uid, &live_jobs)
             else {
                 continue;
             };
@@ -617,10 +620,7 @@ fn completed_jobs_for_template(
             continue;
         }
 
-        let Some(completion_time) = job
-            .status
-            .as_ref()
-            .and_then(|s| s.completion_time.as_ref())
+        let Some(completion_time) = job.status.as_ref().and_then(|s| s.completion_time.as_ref())
         else {
             continue;
         };
@@ -697,9 +697,10 @@ pub(crate) fn is_acceptance_failure(
 
     // Snapshots differ from baseline (and not accepted)
     if let Some(ss) = snapshot_status
-        && ss == "differs_from_baseline" {
-            return true;
-        }
+        && ss == "differs_from_baseline"
+    {
+        return true;
+    }
 
     false
 }

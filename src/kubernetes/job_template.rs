@@ -19,10 +19,18 @@ pub struct JobTemplateSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "acceptanceTest")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "acceptanceTest"
+    )]
     pub acceptance_test: Option<bool>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "cleanupAfter")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "cleanupAfter"
+    )]
     pub cleanup_after: Option<String>,
 
     #[serde(

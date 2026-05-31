@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! serve_static_file {
     ($file:expr) => {{
-        use actix_web::{web, HttpRequest, HttpResponse};
+        use actix_web::{HttpRequest, HttpResponse, web};
         use std::io::Read;
         use std::sync::Arc;
         let path = std::path::Path::new("src/res").join($file);

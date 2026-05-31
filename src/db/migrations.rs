@@ -1,6 +1,6 @@
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite_migration::{Migrations, M};
+use rusqlite_migration::{M, Migrations};
 
 pub fn migrate(
     mut conn: PooledConnection<SqliteConnectionManager>,
@@ -30,9 +30,7 @@ pub fn migrate(
              ALTER TABLE archived_job ADD COLUMN output_test_results_xml TEXT;
              ALTER TABLE archived_job ADD COLUMN output_archive BLOB;",
         ),
-        M::up(
-            "ALTER TABLE archived_job ADD COLUMN events_json TEXT;",
-        ),
+        M::up("ALTER TABLE archived_job ADD COLUMN events_json TEXT;"),
         M::up(
             "CREATE TABLE IF NOT EXISTS job_output (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,9 +42,7 @@ pub fn migrate(
                 UNIQUE(job_name, namespace, file_name)
             );",
         ),
-        M::up(
-            "ALTER TABLE archived_job ADD COLUMN output_test_snapshots BLOB;",
-        ),
+        M::up("ALTER TABLE archived_job ADD COLUMN output_test_snapshots BLOB;"),
         M::up(
             "CREATE TABLE IF NOT EXISTS snapshot_baseline (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,6 +1,6 @@
-use maud::{html, Markup};
-use quick_xml::events::Event;
+use maud::{Markup, html};
 use quick_xml::Reader;
+use quick_xml::events::Event;
 
 #[derive(Default)]
 pub struct TestSuites {
@@ -27,9 +27,17 @@ pub struct TestCase {
 
 pub enum TestCaseStatus {
     Passed,
-    Failed { message: Option<String>, body: Option<String> },
-    Error { message: Option<String>, body: Option<String> },
-    Skipped { message: Option<String> },
+    Failed {
+        message: Option<String>,
+        body: Option<String>,
+    },
+    Error {
+        message: Option<String>,
+        body: Option<String>,
+    },
+    Skipped {
+        message: Option<String>,
+    },
 }
 
 impl TestSuites {
@@ -70,9 +78,10 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
             Ok(Event::Empty(e)) => (e, true),
             Ok(Event::Text(t)) => {
                 if (in_failure || in_error)
-                    && let Ok(txt) = t.unescape() {
-                        text_buf.push_str(&txt);
-                    }
+                    && let Ok(txt) = t.unescape()
+                {
+                    text_buf.push_str(&txt);
+                }
                 continue;
             }
             Ok(Event::End(e)) => {
@@ -80,24 +89,27 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
                     b"failure" => {
                         if let Some(ref mut tc) = current_case
                             && let TestCaseStatus::Failed { ref mut body, .. } = tc.status
-                                && !text_buf.is_empty() {
-                                    *body = Some(text_buf.clone());
-                                }
+                            && !text_buf.is_empty()
+                        {
+                            *body = Some(text_buf.clone());
+                        }
                         in_failure = false;
                     }
                     b"error" => {
                         if let Some(ref mut tc) = current_case
                             && let TestCaseStatus::Error { ref mut body, .. } = tc.status
-                                && !text_buf.is_empty() {
-                                    *body = Some(text_buf.clone());
-                                }
+                            && !text_buf.is_empty()
+                        {
+                            *body = Some(text_buf.clone());
+                        }
                         in_error = false;
                     }
                     b"testcase" => {
                         if let Some(tc) = current_case.take()
-                            && let Some(ref mut suite) = current_suite {
-                                suite.cases.push(tc);
-                            }
+                            && let Some(ref mut suite) = current_suite
+                        {
+                            suite.cases.push(tc);
+                        }
                     }
                     b"testsuite" => {
                         if let Some(suite) = current_suite.take() {
@@ -119,10 +131,20 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
                 for attr in e.attributes().flatten() {
                     match attr.key.as_ref() {
                         b"name" => suite.name = String::from_utf8_lossy(&attr.value).into(),
-                        b"tests" => suite.tests = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                        b"failures" => suite.failures = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                        b"errors" => suite.errors = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
-                        b"skipped" => suite.skipped = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0),
+                        b"tests" => {
+                            suite.tests = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0)
+                        }
+                        b"failures" => {
+                            suite.failures =
+                                String::from_utf8_lossy(&attr.value).parse().unwrap_or(0)
+                        }
+                        b"errors" => {
+                            suite.errors = String::from_utf8_lossy(&attr.value).parse().unwrap_or(0)
+                        }
+                        b"skipped" => {
+                            suite.skipped =
+                                String::from_utf8_lossy(&attr.value).parse().unwrap_or(0)
+                        }
                         b"time" => suite.time = Some(String::from_utf8_lossy(&attr.value).into()),
                         _ => {}
                     }
@@ -139,7 +161,9 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
                 for attr in e.attributes().flatten() {
                     match attr.key.as_ref() {
                         b"name" => tc.name = String::from_utf8_lossy(&attr.value).into(),
-                        b"classname" => tc.classname = Some(String::from_utf8_lossy(&attr.value).into()),
+                        b"classname" => {
+                            tc.classname = Some(String::from_utf8_lossy(&attr.value).into())
+                        }
                         b"time" => tc.time = Some(String::from_utf8_lossy(&attr.value).into()),
                         _ => {}
                     }
@@ -154,27 +178,39 @@ pub fn parse_junit_xml(xml: &str) -> Option<TestSuites> {
                 }
             }
             b"failure" => {
-                let msg = e.attributes().flatten()
+                let msg = e
+                    .attributes()
+                    .flatten()
                     .find(|a| a.key.as_ref() == b"message")
                     .map(|a| String::from_utf8_lossy(&a.value).into());
                 if let Some(ref mut tc) = current_case {
-                    tc.status = TestCaseStatus::Failed { message: msg, body: None };
+                    tc.status = TestCaseStatus::Failed {
+                        message: msg,
+                        body: None,
+                    };
                 }
                 in_failure = !is_empty;
                 text_buf.clear();
             }
             b"error" => {
-                let msg = e.attributes().flatten()
+                let msg = e
+                    .attributes()
+                    .flatten()
                     .find(|a| a.key.as_ref() == b"message")
                     .map(|a| String::from_utf8_lossy(&a.value).into());
                 if let Some(ref mut tc) = current_case {
-                    tc.status = TestCaseStatus::Error { message: msg, body: None };
+                    tc.status = TestCaseStatus::Error {
+                        message: msg,
+                        body: None,
+                    };
                 }
                 in_error = !is_empty;
                 text_buf.clear();
             }
             b"skipped" => {
-                let msg = e.attributes().flatten()
+                let msg = e
+                    .attributes()
+                    .flatten()
                     .find(|a| a.key.as_ref() == b"message")
                     .map(|a| String::from_utf8_lossy(&a.value).into());
                 if let Some(ref mut tc) = current_case {

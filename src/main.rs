@@ -6,7 +6,7 @@ mod web;
 
 use std::sync::Arc;
 
-use actix_web::{get, middleware, web::Data, App, HttpResponse, HttpServer, Responder};
+use actix_web::{App, HttpResponse, HttpServer, Responder, get, middleware, web::Data};
 use actix_web_opentelemetry::{RequestMetrics, RequestTracing};
 use jobfather::serve_static_file;
 use opentelemetry::global;
@@ -40,7 +40,9 @@ async fn metrics_handler(
         Ok(body) => HttpResponse::Ok()
             .content_type("text/plain; version=0.0.4; charset=utf-8")
             .body(body),
-        Err(e) => HttpResponse::InternalServerError().body(format!("Metrics encoding error: {}", e)),
+        Err(e) => {
+            HttpResponse::InternalServerError().body(format!("Metrics encoding error: {}", e))
+        }
     }
 }
 
@@ -70,10 +72,7 @@ async fn start_http(
         App::new()
             .wrap(RequestTracing::new())
             .wrap(RequestMetrics::default())
-            .route(
-                "/api/metrics",
-                actix_web::web::get().to(metrics_handler),
-            )
+            .route("/api/metrics", actix_web::web::get().to(metrics_handler))
             .wrap(middleware::Logger::default())
             .app_data(Data::new(registry.clone()))
             .app_data(Data::new(metrics.clone()))

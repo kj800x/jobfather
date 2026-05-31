@@ -23,11 +23,7 @@ impl JobOutput {
     }
 
     /// Load job output from the job_output table (uploaded by sidecar).
-    pub fn load(
-        job_name: &str,
-        namespace: &str,
-        pool: &Pool<SqliteConnectionManager>,
-    ) -> Self {
+    pub fn load(job_name: &str, namespace: &str, pool: &Pool<SqliteConnectionManager>) -> Self {
         let conn = match pool.get() {
             Ok(c) => c,
             Err(_) => return Self::empty(),

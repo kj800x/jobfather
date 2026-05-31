@@ -1,7 +1,7 @@
-use actix_web::{get, web, HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, get, web};
 use k8s_openapi::api::batch::v1::Job;
 use kube::{Api, Client, ResourceExt};
-use maud::{html, DOCTYPE};
+use maud::{DOCTYPE, html};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
@@ -12,9 +12,7 @@ use crate::metrics::is_acceptance_failure;
 type Conn = r2d2::PooledConnection<SqliteConnectionManager>;
 
 #[get("/job-templates")]
-pub async fn job_templates_page(
-    _client: web::Data<Client>,
-) -> impl Responder {
+pub async fn job_templates_page(_client: web::Data<Client>) -> impl Responder {
     let markup = html! {
         (DOCTYPE)
         html lang="en" {
@@ -306,7 +304,10 @@ fn at_status_for_template(
             .map(|t| t.0.to_rfc3339())
             .unwrap_or_default();
 
-        if best_live.as_ref().is_none_or(|(_, _, _, t)| start_time > *t) {
+        if best_live
+            .as_ref()
+            .is_none_or(|(_, _, _, t)| start_time > *t)
+        {
             let job_name = job.metadata.name.as_deref().unwrap_or("");
             let job_ns = job.metadata.namespace.as_deref().unwrap_or("default");
             let junit_xml = conn.and_then(|c| {

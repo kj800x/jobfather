@@ -1,10 +1,10 @@
-use actix_web::{get, post, web, HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, get, post, web};
 use chrono::{DateTime, Utc};
 use chrono_tz::US::Eastern;
 use k8s_openapi::api::batch::v1::Job;
 use kube::api::PostParams;
 use kube::{Api, Client, ResourceExt};
-use maud::{html, Markup, DOCTYPE};
+use maud::{DOCTYPE, Markup, html};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use serde::Deserialize;
@@ -34,9 +34,7 @@ struct TestResultSummary {
 }
 
 #[get("/job-templates/{namespace}/{name}")]
-pub async fn job_template_detail_page(
-    path: web::Path<(String, String)>,
-) -> impl Responder {
+pub async fn job_template_detail_page(path: web::Path<(String, String)>) -> impl Responder {
     let (namespace, name) = path.into_inner();
 
     let markup = html! {
@@ -96,7 +94,10 @@ pub async fn job_template_detail_fragment(
             log::error!("Failed to get JobTemplate {}/{}: {}", namespace, name, e);
             return HttpResponse::NotFound()
                 .content_type("text/html; charset=utf-8")
-                .body(format!("JobTemplate {}/{} not found: {}", namespace, name, e));
+                .body(format!(
+                    "JobTemplate {}/{} not found: {}",
+                    namespace, name, e
+                ));
         }
     };
 
@@ -124,10 +125,12 @@ pub async fn job_template_detail_fragment(
 
     // Fetch archived jobs from the database
     let archived_jobs = match pool.get() {
-        Ok(conn) => ArchivedJob::get_by_job_template(&name, &namespace, &conn).unwrap_or_else(|e| {
-            log::error!("Failed to query archived jobs: {}", e);
-            vec![]
-        }),
+        Ok(conn) => {
+            ArchivedJob::get_by_job_template(&name, &namespace, &conn).unwrap_or_else(|e| {
+                log::error!("Failed to query archived jobs: {}", e);
+                vec![]
+            })
+        }
         Err(e) => {
             log::error!("Failed to get database connection: {}", e);
             vec![]
@@ -323,9 +326,7 @@ pub async fn job_template_detail_fragment(
 
 fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &str) -> Markup {
     let has_any_sha = rows.iter().any(|r| r.artifact_sha.is_some());
-    let col_count = 5
-        + if is_acceptance_test { 2 } else { 0 }
-        + if has_any_sha { 1 } else { 0 };
+    let col_count = 5 + if is_acceptance_test { 2 } else { 0 } + if has_any_sha { 1 } else { 0 };
 
     // Mark rows where the artifact SHA changed from the previous (next in time) row
     let sha_changed: Vec<bool> = rows
@@ -559,7 +560,11 @@ fn timeago(dt: &DateTime<Utc>) -> String {
 fn format_eastern(dt: &DateTime<Utc>) -> String {
     let eastern = dt.with_timezone(&Eastern);
     let month = eastern.format("%B").to_string();
-    let day = eastern.format("%-d").to_string().parse::<u32>().unwrap_or(1);
+    let day = eastern
+        .format("%-d")
+        .to_string()
+        .parse::<u32>()
+        .unwrap_or(1);
     let suffix = ordinal_suffix(day);
     let rest = eastern.format("%-I:%M:%S %p").to_string();
     let year = eastern.format("%Y").to_string();
@@ -768,29 +773,31 @@ pub async fn job_template_run(
     for i in 0..100 {
         let env_name_key = format!("env_name_{}", i);
         let env_value_key = format!("env_value_{}", i);
-        match (form.extra.get(&env_name_key), form.extra.get(&env_value_key)) {
+        match (
+            form.extra.get(&env_name_key),
+            form.extra.get(&env_value_key),
+        ) {
             (Some(env_name), Some(env_value)) if !env_name.is_empty() => {
                 form_env.push((env_name.clone(), env_value.clone()));
             }
             _ => {
-                if i > 20 { break; }
+                if i > 20 {
+                    break;
+                }
             }
         }
     }
 
-    let job = match crate::kubernetes::job_create::build_job(
-        &job_template,
-        Some(args),
-        Some(form_env),
-    ) {
-        Ok(job) => job,
-        Err(e) => {
-            log::error!("Failed to build job: {}", e);
-            return HttpResponse::InternalServerError()
-                .content_type("text/html; charset=utf-8")
-                .body(render_modal_result(false, &e));
-        }
-    };
+    let job =
+        match crate::kubernetes::job_create::build_job(&job_template, Some(args), Some(form_env)) {
+            Ok(job) => job,
+            Err(e) => {
+                log::error!("Failed to build job: {}", e);
+                return HttpResponse::InternalServerError()
+                    .content_type("text/html; charset=utf-8")
+                    .body(render_modal_result(false, &e));
+            }
+        };
 
     let job_name = job.metadata.name.clone().unwrap_or_default();
     let job_api: Api<Job> = Api::namespaced(client.get_ref().clone(), &namespace);
@@ -799,13 +806,19 @@ pub async fn job_template_run(
             log::info!("Created job {} in namespace {}", job_name, namespace);
             HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
-                .body(render_modal_result(true, &format!("Job {} created", job_name)))
+                .body(render_modal_result(
+                    true,
+                    &format!("Job {} created", job_name),
+                ))
         }
         Err(e) => {
             log::error!("Failed to create job: {}", e);
             HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
-                .body(render_modal_result(false, &format!("Failed to create job: {}", e)))
+                .body(render_modal_result(
+                    false,
+                    &format!("Failed to create job: {}", e),
+                ))
         }
     }
 }
@@ -877,8 +890,8 @@ fn job_status(job: &Job) -> (&str, &str) {
         }
     }
 
-    let has_completed_pod = status.succeeded.is_some_and(|n| n > 0)
-        || status.failed.is_some_and(|n| n > 0);
+    let has_completed_pod =
+        status.succeeded.is_some_and(|n| n > 0) || status.failed.is_some_and(|n| n > 0);
 
     if status.active.is_some_and(|a| a > 0) {
         if status.ready.is_some_and(|r| r > 0) {

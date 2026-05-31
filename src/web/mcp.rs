@@ -1,8 +1,8 @@
-use actix_web::{get, post, web, HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, get, post, web};
 use kube::Client;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// MCP Streamable HTTP endpoint — handles JSON-RPC 2.0 requests.
 #[post("/mcp")]
@@ -13,10 +13,7 @@ pub async fn mcp_post(
 ) -> impl Responder {
     let request = body.into_inner();
     let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let method = request
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
     let response = match method {
         "initialize" => json!({
@@ -45,14 +42,8 @@ pub async fn mcp_post(
         }),
         "tools/call" => {
             let params = request.get("params").cloned().unwrap_or(json!({}));
-            let tool_name = params
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(json!({}));
+            let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
             let result = call_tool(tool_name, &arguments, &client, &pool).await;
             match result {
                 Ok(text) => json!({
@@ -238,8 +229,7 @@ async fn call_tool(
 ) -> Result<String, String> {
     match name {
         "list_job_templates" => {
-            let api: kube::Api<crate::kubernetes::JobTemplate> =
-                kube::Api::all(client.clone());
+            let api: kube::Api<crate::kubernetes::JobTemplate> = kube::Api::all(client.clone());
             match api.list(&Default::default()).await {
                 Ok(list) => {
                     let templates: Vec<_> = list.items.iter().map(super::api::jt_to_api).collect();
@@ -262,8 +252,7 @@ async fn call_tool(
         "list_jobs" => {
             let (ns, n) = get_ns_name(args)?;
             let jobs = super::api::list_jobs_for_template_inner(&ns, &n, client, pool).await;
-            serde_json::to_string_pretty(&jobs)
-                .map_err(|e| format!("Serialization error: {}", e))
+            serde_json::to_string_pretty(&jobs).map_err(|e| format!("Serialization error: {}", e))
         }
         "get_job" => {
             let (ns, n) = get_ns_name(args)?;
@@ -281,8 +270,7 @@ async fn call_tool(
         "get_job_events" => {
             let (ns, n) = get_ns_name(args)?;
             let events = super::api::get_job_events_inner(&ns, &n, client, pool).await;
-            serde_json::to_string_pretty(&events)
-                .map_err(|e| format!("Serialization error: {}", e))
+            serde_json::to_string_pretty(&events).map_err(|e| format!("Serialization error: {}", e))
         }
         "get_job_test_results" => {
             let (ns, n) = get_ns_name(args)?;
@@ -310,9 +298,9 @@ async fn call_tool(
         }
         "run_job" => {
             let (ns, n) = get_ns_name(args)?;
-            let run_args = args.get("args").and_then(|a| {
-                serde_json::from_value::<Vec<String>>(a.clone()).ok()
-            });
+            let run_args = args
+                .get("args")
+                .and_then(|a| serde_json::from_value::<Vec<String>>(a.clone()).ok());
             let run_env = args.get("env").and_then(|e| {
                 serde_json::from_value::<std::collections::HashMap<String, String>>(e.clone()).ok()
             });

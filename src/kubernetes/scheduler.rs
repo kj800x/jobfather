@@ -18,8 +18,7 @@ fn resolve_schedule(schedule: &str, namespace: &str, name: &str) -> Option<Strin
         "hourly" | "daily" | "weekly" | "monthly" => {
             let hash_input = format!("{}/{}", namespace, name);
             let digest = md5::compute(hash_input.as_bytes());
-            let hash =
-                u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
+            let hash = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
 
             match schedule.trim().to_lowercase().as_str() {
                 "hourly" => format!("{} * * * *", hash % 60),
@@ -113,10 +112,7 @@ async fn get_last_run_time(
 ) -> Option<DateTime<Utc>> {
     // Live jobs: find jobs owned by this JobTemplate
     let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);
-    let live_max = match job_api
-        .list(&kube::api::ListParams::default())
-        .await
-    {
+    let live_max = match job_api.list(&kube::api::ListParams::default()).await {
         Ok(job_list) => job_list
             .items
             .iter()
@@ -134,7 +130,12 @@ async fn get_last_run_time(
             })
             .max(),
         Err(e) => {
-            log::warn!("Failed to list live jobs for {}/{}: {}", namespace, jt_name, e);
+            log::warn!(
+                "Failed to list live jobs for {}/{}: {}",
+                namespace,
+                jt_name,
+                e
+            );
             None
         }
     };
@@ -245,9 +246,7 @@ pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>, metrics: A
         }
 
         // Update gauge metrics
-        metrics
-            .update_gauges(&client, &pool, &job_templates)
-            .await;
+        metrics.update_gauges(&client, &pool, &job_templates).await;
 
         tick_timer.observe_duration();
     }

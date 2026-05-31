@@ -1,8 +1,8 @@
-use actix_web::{get, web, HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, get, web};
 use k8s_openapi::api::batch::v1::Job;
 use kube::api::LogParams;
 use kube::{Api, Client, ResourceExt};
-use maud::{html, Markup, PreEscaped, DOCTYPE};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 
@@ -40,9 +40,11 @@ fn build_snapshot_file_views(
     // Add differing files
     for f in &diff.files {
         let diff_lines = if f.path.ends_with(".json") && f.status == FileDiffStatus::Changed {
-            baseline
-                .get(&f.path)
-                .and_then(|old| current.get(&f.path).and_then(|new| snapshot::json_diff(old, new)))
+            baseline.get(&f.path).and_then(|old| {
+                current
+                    .get(&f.path)
+                    .and_then(|new| snapshot::json_diff(old, new))
+            })
         } else {
             None
         };
@@ -71,9 +73,7 @@ fn build_snapshot_file_views(
 }
 
 #[get("/jobs/{namespace}/{name}")]
-pub async fn job_detail_page(
-    path: web::Path<(String, String)>,
-) -> impl Responder {
+pub async fn job_detail_page(path: web::Path<(String, String)>) -> impl Responder {
     let (namespace, name) = path.into_inner();
 
     let markup = html! {
@@ -150,7 +150,9 @@ pub async fn job_detail_fragment(
         Err(_) => {
             // Job not found in Kubernetes — look in the archive
             let archived = pool.get().ok().and_then(|conn| {
-                ArchivedJob::get_by_name_and_namespace(&name, &namespace, &conn).ok().flatten()
+                ArchivedJob::get_by_name_and_namespace(&name, &namespace, &conn)
+                    .ok()
+                    .flatten()
             });
 
             match archived {
@@ -160,11 +162,9 @@ pub async fn job_detail_fragment(
                         .content_type("text/html; charset=utf-8")
                         .body(markup.into_string())
                 }
-                None => {
-                    HttpResponse::NotFound()
-                        .content_type("text/html; charset=utf-8")
-                        .body(format!("Job {}/{} not found", namespace, name))
-                }
+                None => HttpResponse::NotFound()
+                    .content_type("text/html; charset=utf-8")
+                    .body(format!("Job {}/{} not found", namespace, name)),
             }
         }
     }
@@ -179,11 +179,16 @@ pub async fn job_output_archive(
 
     // Try job_output table first (live jobs), then archived_job
     if let Some(archive) = pool.get().ok().and_then(|conn| {
-        crate::db::job_output::get(&name, &namespace, "archive.tar.gz", &conn).ok().flatten()
+        crate::db::job_output::get(&name, &namespace, "archive.tar.gz", &conn)
+            .ok()
+            .flatten()
     }) {
         return HttpResponse::Ok()
             .content_type("application/gzip")
-            .append_header(("Content-Disposition", "attachment; filename=\"archive.tar.gz\""))
+            .append_header((
+                "Content-Disposition",
+                "attachment; filename=\"archive.tar.gz\"",
+            ))
             .body(archive);
     }
 
@@ -195,7 +200,10 @@ pub async fn job_output_archive(
     }) {
         return HttpResponse::Ok()
             .content_type("application/gzip")
-            .append_header(("Content-Disposition", "attachment; filename=\"archive.tar.gz\""))
+            .append_header((
+                "Content-Disposition",
+                "attachment; filename=\"archive.tar.gz\"",
+            ))
             .body(archive);
     }
 
@@ -212,11 +220,16 @@ pub async fn job_output_test_snapshots(
     let (namespace, name) = path.into_inner();
 
     if let Some(data) = pool.get().ok().and_then(|conn| {
-        crate::db::job_output::get(&name, &namespace, "test-snapshots.tar.gz", &conn).ok().flatten()
+        crate::db::job_output::get(&name, &namespace, "test-snapshots.tar.gz", &conn)
+            .ok()
+            .flatten()
     }) {
         return HttpResponse::Ok()
             .content_type("application/gzip")
-            .append_header(("Content-Disposition", "attachment; filename=\"test-snapshots.tar.gz\""))
+            .append_header((
+                "Content-Disposition",
+                "attachment; filename=\"test-snapshots.tar.gz\"",
+            ))
             .body(data);
     }
 
@@ -228,7 +241,10 @@ pub async fn job_output_test_snapshots(
     }) {
         return HttpResponse::Ok()
             .content_type("application/gzip")
-            .append_header(("Content-Disposition", "attachment; filename=\"test-snapshots.tar.gz\""))
+            .append_header((
+                "Content-Disposition",
+                "attachment; filename=\"test-snapshots.tar.gz\"",
+            ))
             .body(data);
     }
 
@@ -237,19 +253,31 @@ pub async fn job_output_test_snapshots(
         .body("No test snapshots found")
 }
 
-async fn render_live_job(job: &Job, client: &Client, namespace: &str, pool: &Pool<SqliteConnectionManager>) -> Markup {
+async fn render_live_job(
+    job: &Job,
+    client: &Client,
+    namespace: &str,
+    pool: &Pool<SqliteConnectionManager>,
+) -> Markup {
     let job_name = job.name_any();
     let status = job_status(job);
-    let start_time = job.status.as_ref()
+    let start_time = job
+        .status
+        .as_ref()
         .and_then(|s| s.start_time.as_ref())
         .map(|t| t.0.format("%Y-%m-%d %H:%M:%S").to_string());
-    let completion_time = job.status.as_ref()
+    let completion_time = job
+        .status
+        .as_ref()
         .and_then(|s| s.completion_time.as_ref())
         .map(|t| t.0.format("%Y-%m-%d %H:%M:%S").to_string());
     let duration = job_duration_display(job);
 
     // Find parent JobTemplate from owner references
-    let jt_ref = job.metadata.owner_references.as_ref()
+    let jt_ref = job
+        .metadata
+        .owner_references
+        .as_ref()
         .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"));
 
     // Fetch live logs, events, and job output
@@ -465,13 +493,16 @@ fn render_output_sections(
     snap_ctx: Option<&SnapshotContext>,
 ) -> Markup {
     let has_tests = output.test_results_xml.is_some() || snap_ctx.is_some();
-    let has_other = output.result_json.is_some() || output.report_md.is_some() || output.archive.is_some();
+    let has_other =
+        output.result_json.is_some() || output.report_md.is_some() || output.archive.is_some();
 
     if !has_tests && !has_other {
         return html! {};
     }
 
-    let junit_suites = output.test_results_xml.as_deref()
+    let junit_suites = output
+        .test_results_xml
+        .as_deref()
         .and_then(super::junit::parse_junit_xml);
 
     html! {
@@ -715,7 +746,11 @@ fn is_terminal(job: &Job) -> bool {
     false
 }
 
-pub(crate) async fn fetch_live_logs(client: &Client, namespace: &str, job_name: &str) -> Option<String> {
+pub(crate) async fn fetch_live_logs(
+    client: &Client,
+    namespace: &str,
+    job_name: &str,
+) -> Option<String> {
     let pod_api: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), namespace);
     let pods = pod_api
         .list(&kube::api::ListParams::default().labels(&format!("job-name={}", job_name)))
@@ -725,10 +760,16 @@ pub(crate) async fn fetch_live_logs(client: &Client, namespace: &str, job_name: 
     let mut all_logs = Vec::new();
     for pod in &pods.items {
         let pod_name = pod.name_any();
-        if let Ok(log_str) = pod_api.logs(&pod_name, &LogParams {
-            timestamps: true,
-            ..Default::default()
-        }).await {
+        if let Ok(log_str) = pod_api
+            .logs(
+                &pod_name,
+                &LogParams {
+                    timestamps: true,
+                    ..Default::default()
+                },
+            )
+            .await
+        {
             if pods.items.len() > 1 {
                 all_logs.push(format!("=== Pod: {} ===\n{}", pod_name, log_str));
             } else {
@@ -737,7 +778,11 @@ pub(crate) async fn fetch_live_logs(client: &Client, namespace: &str, job_name: 
         }
     }
 
-    if all_logs.is_empty() { None } else { Some(all_logs.join("\n")) }
+    if all_logs.is_empty() {
+        None
+    } else {
+        Some(all_logs.join("\n"))
+    }
 }
 
 fn job_status(job: &Job) -> (&str, &str) {

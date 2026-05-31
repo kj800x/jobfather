@@ -1,4 +1,4 @@
-use actix_web::{put, web, HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, put, web};
 use k8s_openapi::api::batch::v1::Job;
 use kube::{Api, Client};
 use r2d2::Pool;
@@ -32,7 +32,13 @@ pub async fn upload_job_output(
             log::info!("Received output {}/{}/{}", namespace, name, filename);
         }
         Err(e) => {
-            log::error!("Failed to store output {}/{}/{}: {}", namespace, name, filename, e);
+            log::error!(
+                "Failed to store output {}/{}/{}: {}",
+                namespace,
+                name,
+                filename,
+                e
+            );
             return HttpResponse::InternalServerError().body("Failed to store output");
         }
     }
@@ -62,7 +68,12 @@ async fn compute_and_store_snapshot_status(
             .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"))
             .map(|r| r.name.clone()),
         Err(e) => {
-            log::warn!("Failed to look up job {}/{} for snapshot status: {}", namespace, job_name, e);
+            log::warn!(
+                "Failed to look up job {}/{} for snapshot status: {}",
+                namespace,
+                job_name,
+                e
+            );
             None
         }
     };
@@ -74,7 +85,12 @@ async fn compute_and_store_snapshot_status(
     let current = match crate::snapshot::extract_tarball(tarball) {
         Ok(f) => f,
         Err(e) => {
-            log::warn!("Failed to extract snapshots for {}/{}: {}", namespace, job_name, e);
+            log::warn!(
+                "Failed to extract snapshots for {}/{}: {}",
+                namespace,
+                job_name,
+                e
+            );
             return;
         }
     };
@@ -84,7 +100,8 @@ async fn compute_and_store_snapshot_status(
         Err(_) => return,
     };
 
-    let (baseline_id, baseline) = crate::db::snapshot::load_latest_baseline_conn(&jt_name, namespace, &conn);
+    let (baseline_id, baseline) =
+        crate::db::snapshot::load_latest_baseline_conn(&jt_name, namespace, &conn);
     let diff = crate::snapshot::compare(&baseline, &current);
     let status = if diff.has_differences() {
         "differs_from_baseline"
@@ -92,11 +109,29 @@ async fn compute_and_store_snapshot_status(
         "matches_baseline"
     };
 
-    let _ = job_output::upsert(job_name, namespace, "_snapshot_status", status.as_bytes(), &conn);
+    let _ = job_output::upsert(
+        job_name,
+        namespace,
+        "_snapshot_status",
+        status.as_bytes(),
+        &conn,
+    );
     if let Ok(diff_json) = serde_json::to_string(&diff) {
-        let _ = job_output::upsert(job_name, namespace, "_snapshot_diff_json", diff_json.as_bytes(), &conn);
+        let _ = job_output::upsert(
+            job_name,
+            namespace,
+            "_snapshot_diff_json",
+            diff_json.as_bytes(),
+            &conn,
+        );
     }
     if let Some(id) = baseline_id {
-        let _ = job_output::upsert(job_name, namespace, "_snapshot_baseline_id", id.to_string().as_bytes(), &conn);
+        let _ = job_output::upsert(
+            job_name,
+            namespace,
+            "_snapshot_baseline_id",
+            id.to_string().as_bytes(),
+            &conn,
+        );
     }
 }

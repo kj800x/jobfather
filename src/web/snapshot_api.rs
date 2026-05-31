@@ -1,4 +1,4 @@
-use actix_web::{get, post, web, HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, get, post, web};
 use maud::html;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -37,7 +37,11 @@ pub async fn accept_snapshots(
     let tarball = crate::db::job_output::get(&name, &namespace, "test-snapshots.tar.gz", &conn)
         .ok()
         .flatten()
-        .or_else(|| archived.as_ref().and_then(|j| j.output_test_snapshots.clone()));
+        .or_else(|| {
+            archived
+                .as_ref()
+                .and_then(|j| j.output_test_snapshots.clone())
+        });
 
     let tarball = match tarball {
         Some(t) => t,
@@ -48,7 +52,10 @@ pub async fn accept_snapshots(
     let (jt_name, jt_namespace) = match (&form.job_template_name, &form.job_template_namespace) {
         (Some(n), Some(ns)) => (n.clone(), ns.clone()),
         _ => match &archived {
-            Some(j) => (j.job_template_name.clone(), j.job_template_namespace.clone()),
+            Some(j) => (
+                j.job_template_name.clone(),
+                j.job_template_namespace.clone(),
+            ),
             None => {
                 return HttpResponse::BadRequest()
                     .body("Cannot determine JobTemplate. Provide job_template_name and job_template_namespace.");
@@ -57,14 +64,23 @@ pub async fn accept_snapshots(
     };
 
     // Only allow accepting from the latest run
-    if !crate::db::snapshot::is_latest_snapshot_job(&jt_name, &jt_namespace, &name, &namespace, &conn) {
+    if !crate::db::snapshot::is_latest_snapshot_job(
+        &jt_name,
+        &jt_namespace,
+        &name,
+        &namespace,
+        &conn,
+    ) {
         return HttpResponse::BadRequest().body("Only the latest run can be accepted as baseline");
     }
 
     // Extract the tarball
     let files = match crate::snapshot::extract_tarball(&tarball) {
         Ok(f) => f,
-        Err(e) => return HttpResponse::InternalServerError().body(format!("Failed to extract snapshots: {}", e)),
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .body(format!("Failed to extract snapshots: {}", e));
+        }
     };
 
     // Create a new baseline set (old baselines are preserved but marked not latest)
@@ -90,7 +106,10 @@ pub async fn accept_snapshots(
 
     log::info!(
         "Accepted snapshots from {}/{} as new baseline for {}/{}",
-        namespace, name, jt_namespace, jt_name
+        namespace,
+        name,
+        jt_namespace,
+        jt_name
     );
 
     let n_files = files.len();
@@ -150,9 +169,7 @@ pub async fn job_snapshot_file(
     match crate::snapshot::extract_file_from_tarball(&tarball, &file_path) {
         Ok(Some(content)) => {
             let content_type = guess_content_type(&file_path);
-            HttpResponse::Ok()
-                .content_type(content_type)
-                .body(content)
+            HttpResponse::Ok().content_type(content_type).body(content)
         }
         Ok(None) => HttpResponse::NotFound().body(format!("File not found: {}", file_path)),
         Err(e) => HttpResponse::InternalServerError().body(format!("Failed to extract: {}", e)),
@@ -175,11 +192,11 @@ pub async fn baseline_snapshot_file(
     match crate::db::snapshot::get_latest_baseline_file(&name, &namespace, &file_path, &conn) {
         Ok(Some(content)) => {
             let content_type = guess_content_type(&file_path);
-            HttpResponse::Ok()
-                .content_type(content_type)
-                .body(content)
+            HttpResponse::Ok().content_type(content_type).body(content)
         }
-        Ok(None) => HttpResponse::NotFound().body(format!("Baseline file not found: {}", file_path)),
+        Ok(None) => {
+            HttpResponse::NotFound().body(format!("Baseline file not found: {}", file_path))
+        }
         Err(e) => {
             log::error!("Failed to load baseline file: {}", e);
             HttpResponse::InternalServerError().body("Database error")
@@ -203,11 +220,11 @@ pub async fn baseline_set_file(
     match crate::db::snapshot::get_baseline_file(baseline_id, &file_path, &conn) {
         Ok(Some(content)) => {
             let content_type = guess_content_type(&file_path);
-            HttpResponse::Ok()
-                .content_type(content_type)
-                .body(content)
+            HttpResponse::Ok().content_type(content_type).body(content)
         }
-        Ok(None) => HttpResponse::NotFound().body(format!("Baseline file not found: {}", file_path)),
+        Ok(None) => {
+            HttpResponse::NotFound().body(format!("Baseline file not found: {}", file_path))
+        }
         Err(e) => {
             log::error!("Failed to load baseline file: {}", e);
             HttpResponse::InternalServerError().body("Database error")

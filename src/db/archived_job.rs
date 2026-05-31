@@ -3,8 +3,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-const SELECT_COLUMNS: &str =
-    "id, name, namespace, job_template_name, job_template_namespace,
+const SELECT_COLUMNS: &str = "id, name, namespace, job_template_name, job_template_namespace,
      uid, status, start_time, completion_time, duration_seconds, logs, archived_at,
      output_result_json, output_report_md, output_test_results_xml, output_archive,
      output_test_snapshots, events_json, snapshot_status, snapshot_diff_json,

@@ -35,7 +35,9 @@ pub fn extract_tarball(data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, String>
     let mut archive = tar::Archive::new(gz);
     let mut files = BTreeMap::new();
 
-    let entries = archive.entries().map_err(|e| format!("Failed to read tarball: {}", e))?;
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed to read tarball: {}", e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read tarball entry: {}", e))?;
         if !entry.header().entry_type().is_file() {
@@ -62,11 +64,16 @@ pub fn extract_tarball(data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, String>
 }
 
 /// Extract a single file from a tar.gz archive by path.
-pub fn extract_file_from_tarball(data: &[u8], target_path: &str) -> Result<Option<Vec<u8>>, String> {
+pub fn extract_file_from_tarball(
+    data: &[u8],
+    target_path: &str,
+) -> Result<Option<Vec<u8>>, String> {
     let gz = flate2::read::GzDecoder::new(data);
     let mut archive = tar::Archive::new(gz);
 
-    let entries = archive.entries().map_err(|e| format!("Failed to read tarball: {}", e))?;
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("Failed to read tarball: {}", e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("Failed to read tarball entry: {}", e))?;
         if !entry.header().entry_type().is_file() {

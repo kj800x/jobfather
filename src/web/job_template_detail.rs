@@ -11,6 +11,9 @@ use serde::Deserialize;
 
 const DEFAULT_JOB_LIMIT: usize = 100;
 
+/// Env vars with this prefix are injected by CI/CD and shown read-only in the run dialog.
+const CICD_ENV_PREFIX: &str = "CICD_";
+
 use crate::db::ArchivedJob;
 use crate::kubernetes::JobTemplate;
 
@@ -583,6 +586,257 @@ fn ordinal_suffix(n: u32) -> &'static str {
     }
 }
 
+/// Everything the run-job modal needs to render itself.
+///
+/// Built from the JobTemplate for the initial GET, and rebuilt from the
+/// JobTemplate plus the submitted form when a POST bounces back with an error,
+/// so the user never loses what they typed.
+struct RunModalData {
+    namespace: String,
+    name: String,
+    image: String,
+    command: Vec<String>,
+    /// Plain-value env vars the user may edit. Names come from the template.
+    editable: Vec<(String, String)>,
+    /// CICD_* env vars: shown, submitted, but not editable.
+    locked: Vec<(String, String)>,
+    /// valueFrom env vars: shown only. build_job carries these over untouched.
+    refs: Vec<(String, String)>,
+    /// Env vars the user added in the modal (name and value both editable).
+    extra: Vec<(String, String)>,
+    /// Arguments as a single shell-quoted line.
+    args_line: String,
+    error: Option<String>,
+}
+
+impl RunModalData {
+    fn from_template(job_template: &JobTemplate, namespace: &str, name: &str) -> Self {
+        let first_container = job_template
+            .spec
+            .spec
+            .get("containers")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first());
+
+        let string_list = |key: &str| -> Vec<String> {
+            first_container
+                .and_then(|c| c.get(key))
+                .and_then(|a| a.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|a| a.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        let mut editable: Vec<(String, String)> = Vec::new();
+        let mut locked: Vec<(String, String)> = Vec::new();
+        let mut refs: Vec<(String, String)> = Vec::new();
+
+        if let Some(envs) = first_container
+            .and_then(|c| c.get("env"))
+            .and_then(|e| e.as_array())
+        {
+            for e in envs {
+                let Some(env_name) = e.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                if let Some(value_from) = e.get("valueFrom") {
+                    refs.push((env_name.to_string(), describe_value_from(value_from)));
+                } else {
+                    let value = e.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                    if env_name.starts_with(CICD_ENV_PREFIX) {
+                        locked.push((env_name.to_string(), value.to_string()));
+                    } else {
+                        editable.push((env_name.to_string(), value.to_string()));
+                    }
+                }
+            }
+        }
+
+        Self {
+            namespace: namespace.to_string(),
+            name: name.to_string(),
+            image: first_container
+                .and_then(|c| c.get("image"))
+                .and_then(|i| i.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            command: string_list("command"),
+            args_line: shell_words::join(string_list("args")),
+            editable,
+            locked,
+            refs,
+            extra: Vec::new(),
+            error: None,
+        }
+    }
+
+    /// Overlay what the user submitted on top of the template's values, so a
+    /// re-rendered modal shows their edits rather than resetting them.
+    fn apply_submission(&mut self, args_line: String, submitted_env: Vec<(String, String)>) {
+        self.args_line = args_line;
+        for (env_name, value) in submitted_env {
+            if env_name.starts_with(CICD_ENV_PREFIX) {
+                continue; // not editable; the template is the source of truth
+            }
+            match self.editable.iter_mut().find(|(n, _)| *n == env_name) {
+                Some(entry) => entry.1 = value,
+                None => self.extra.push((env_name, value)),
+            }
+        }
+    }
+
+    fn env_count(&self) -> usize {
+        self.editable.len() + self.locked.len() + self.refs.len() + self.extra.len()
+    }
+}
+
+/// Renders the run-job modal. Read-only configuration lives inside a collapsed
+/// `<details>` so the arguments field is what you see on open.
+fn render_run_modal(data: &RunModalData) -> Markup {
+    // Form field indices run contiguously across editable, locked and added rows.
+    let locked_offset = data.editable.len();
+    let extra_offset = locked_offset + data.locked.len();
+    let next_index = extra_offset + data.extra.len();
+    let env_count = data.env_count();
+
+    html! {
+        dialog id="run-job-dialog" class="modal" open {
+            div class="modal-backdrop" onclick="this.closest('dialog').remove()" {}
+            div class="modal-content" {
+                div class="modal-header" {
+                    div class="modal-title-group" {
+                        span class="modal-title" { "Run job" }
+                        span class="modal-subtitle" { (data.namespace) " / " (data.name) }
+                        span class="modal-subtitle-dim" title=(data.image) { (data.image) }
+                    }
+                    button class="modal-close" onclick="this.closest('dialog').remove()" { "x" }
+                }
+                form
+                    hx-post=(format!("/job-templates/{}/{}/run", data.namespace, data.name))
+                    hx-target="#modal-container"
+                    hx-swap="innerHTML" {
+                    div class="modal-body" {
+                        div class="form-group" {
+                            label for="args" { "Arguments" }
+                            div class=(if data.error.is_some() { "args-field args-field-error" } else { "args-field" }) {
+                                @if !data.command.is_empty() {
+                                    span class="args-command" { (shell_words::join(&data.command)) }
+                                }
+                                input type="text" id="args" name="args" value=(data.args_line)
+                                    class="args-input" placeholder="--flag value"
+                                    autocapitalize="off" autocorrect="off" spellcheck="false";
+                            }
+                            @if let Some(error) = &data.error {
+                                div class="form-error" { (error) }
+                            }
+                        }
+
+                        details class="env-details" {
+                            summary class="env-summary" {
+                                span class="env-summary-title" { "Environment" }
+                                span class="env-summary-count" {
+                                    (env_count) " variables from the template"
+                                }
+                            }
+                            div class="env-details-body" {
+                                @for (i, (env_name, value)) in data.editable.iter().enumerate() {
+                                    div class="env-edit-row" {
+                                        span class="env-key" { (env_name) }
+                                        input type="hidden" name=(format!("env_name_{}", i)) value=(env_name);
+                                        input type="text" name=(format!("env_value_{}", i)) value=(value)
+                                            class="env-value" placeholder="value"
+                                            autocapitalize="off" autocorrect="off" spellcheck="false";
+                                    }
+                                }
+                                @for (i, (env_name, value)) in data.extra.iter().enumerate() {
+                                    div class="env-edit-row" {
+                                        input type="text" name=(format!("env_name_{}", extra_offset + i)) value=(env_name)
+                                            class="env-key-input" placeholder="NAME"
+                                            autocapitalize="off" autocorrect="off" spellcheck="false";
+                                        input type="text" name=(format!("env_value_{}", extra_offset + i)) value=(value)
+                                            class="env-value" placeholder="value"
+                                            autocapitalize="off" autocorrect="off" spellcheck="false";
+                                    }
+                                }
+
+                                @if !data.locked.is_empty() || !data.refs.is_empty() {
+                                    div class="env-divider" {
+                                        span class="env-divider-label" { "Set by CI/CD and secrets" }
+                                    }
+                                    @for (env_name, source) in &data.refs {
+                                        div class="env-static-row" {
+                                            span class="env-static-key" { (env_name) }
+                                            span class="env-static-value" { (source) }
+                                        }
+                                    }
+                                    @for (i, (env_name, value)) in data.locked.iter().enumerate() {
+                                        div class="env-static-row" {
+                                            span class="env-static-key" { (env_name) }
+                                            span class="env-static-value" { (value) }
+                                            // Not editable, but still submitted: build_job replaces
+                                            // every plain-value env var with what the form sends.
+                                            input type="hidden" name=(format!("env_name_{}", locked_offset + i)) value=(env_name);
+                                            input type="hidden" name=(format!("env_value_{}", locked_offset + i)) value=(value);
+                                        }
+                                    }
+                                }
+
+                                button type="button" class="env-add-btn" data-env-add=(next_index) {
+                                    "+ Add variable"
+                                }
+                            }
+                        }
+                    }
+                    div class="modal-footer" {
+                        button type="button" class="btn btn-secondary" onclick="this.closest('dialog').remove()" { "Cancel" }
+                        button type="submit" class="btn btn-primary" { "Run job" }
+                    }
+                }
+            }
+            script { (maud::PreEscaped(ENV_ADD_SCRIPT)) }
+        }
+    }
+}
+
+/// Appends a blank name/value row when "+ Add variable" is clicked. Inline
+/// because the modal markup is swapped in by htmx, which evaluates scripts in
+/// swapped content.
+const ENV_ADD_SCRIPT: &str = r#"
+(function () {
+  var btn = document.querySelector('#run-job-dialog [data-env-add]');
+  if (!btn) return;
+  var next = parseInt(btn.getAttribute('data-env-add'), 10);
+  btn.addEventListener('click', function () {
+    var row = document.createElement('div');
+    row.className = 'env-edit-row';
+    var key = document.createElement('input');
+    key.type = 'text';
+    key.className = 'env-key-input';
+    key.placeholder = 'NAME';
+    key.name = 'env_name_' + next;
+    var value = document.createElement('input');
+    value.type = 'text';
+    value.className = 'env-value';
+    value.placeholder = 'value';
+    value.name = 'env_value_' + next;
+    [key, value].forEach(function (el) {
+      el.setAttribute('autocapitalize', 'off');
+      el.setAttribute('autocorrect', 'off');
+      el.setAttribute('spellcheck', 'false');
+    });
+    row.appendChild(key);
+    row.appendChild(value);
+    btn.parentNode.insertBefore(row, btn);
+    next++;
+    key.focus();
+  });
+})();
+"#;
+
 #[get("/job-templates/{namespace}/{name}/run-modal")]
 pub async fn job_template_run_modal(
     path: web::Path<(String, String)>,
@@ -600,137 +854,10 @@ pub async fn job_template_run_modal(
         }
     };
 
-    // Extract current args and env from the first container in the pod spec
-    let pod_spec = &job_template.spec.spec;
-    let first_container = pod_spec
-        .get("containers")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first());
-
-    let current_args: Vec<String> = first_container
-        .and_then(|c| c.get("args"))
-        .and_then(|a| a.as_array())
-        .map(|args| {
-            args.iter()
-                .filter_map(|a| a.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let current_command: Vec<String> = first_container
-        .and_then(|c| c.get("command"))
-        .and_then(|a| a.as_array())
-        .map(|args| {
-            args.iter()
-                .filter_map(|a| a.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Separate env vars into editable (plain value) and non-editable (valueFrom / secretKeyRef etc.)
-    let env_array = first_container
-        .and_then(|c| c.get("env"))
-        .and_then(|e| e.as_array());
-
-    let mut editable_env: Vec<(String, String)> = Vec::new();
-    let mut ref_env: Vec<(String, String)> = Vec::new(); // (name, source description)
-
-    if let Some(envs) = env_array {
-        for e in envs {
-            let Some(env_name) = e.get("name").and_then(|n| n.as_str()) else {
-                continue;
-            };
-            if e.get("valueFrom").is_some() {
-                // Describe the source for display
-                let source = describe_value_from(e.get("valueFrom").unwrap());
-                ref_env.push((env_name.to_string(), source));
-            } else {
-                let value = e.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                editable_env.push((env_name.to_string(), value.to_string()));
-            }
-        }
-    }
-
-    let container_image = first_container
-        .and_then(|c| c.get("image"))
-        .and_then(|i| i.as_str())
-        .unwrap_or("unknown");
-
-    let args_text = current_args.join("\n");
-
-    let markup = html! {
-        dialog id="run-job-dialog" class="modal" open {
-            div class="modal-backdrop" onclick="this.closest('dialog').remove()" {}
-            div class="modal-content" {
-                div class="modal-header" {
-                    h3 { "Run Job: " (name) }
-                    button class="modal-close" onclick="this.closest('dialog').remove()" { "x" }
-                }
-                form
-                    hx-post=(format!("/job-templates/{}/{}/run", namespace, name))
-                    hx-target="#modal-container"
-                    hx-swap="innerHTML" {
-                    div class="modal-body" {
-                        div class="form-info" {
-                            span class="form-info-label" { "Image" }
-                            code { (container_image) }
-                        }
-                        @if !current_command.is_empty() {
-                            div class="form-info" {
-                                span class="form-info-label" { "Command" }
-                                code { (current_command.join(" ")) }
-                            }
-                        }
-                        div class="form-group" {
-                            label for="args" { "Arguments " span class="text-muted" { "(one per line)" } }
-                            textarea id="args" name="args" class="form-control" rows="4" {
-                                (args_text)
-                            }
-                        }
-                        @if !ref_env.is_empty() {
-                            div class="form-group" {
-                                label { "Environment Variables " span class="text-muted" { "(from secrets/refs - inherited automatically)" } }
-                                @for (env_name, source) in &ref_env {
-                                    div class="env-row env-row-readonly" {
-                                        span class="env-ref-name" { (env_name) }
-                                        span class="env-ref-source" { (source) }
-                                    }
-                                }
-                            }
-                        }
-                        div class="form-group" {
-                            label { "Environment Variables " span class="text-muted" { "(editable)" } }
-                            @for (i, (env_name, env_value)) in editable_env.iter().enumerate() {
-                                div class="env-row" {
-                                    input type="text" name=(format!("env_name_{}", i)) value=(env_name)
-                                        class="form-control env-name" placeholder="NAME";
-                                    input type="text" name=(format!("env_value_{}", i)) value=(env_value)
-                                        class="form-control env-value" placeholder="value";
-                                }
-                            }
-                            // Extra empty rows for adding new env vars
-                            @for i in editable_env.len()..(editable_env.len() + 3) {
-                                div class="env-row" {
-                                    input type="text" name=(format!("env_name_{}", i))
-                                        class="form-control env-name" placeholder="NAME";
-                                    input type="text" name=(format!("env_value_{}", i))
-                                        class="form-control env-value" placeholder="value";
-                                }
-                            }
-                        }
-                    }
-                    div class="modal-footer" {
-                        button type="button" class="btn btn-secondary" onclick="this.closest('dialog').remove()" { "Cancel" }
-                        button type="submit" class="btn btn-primary" { "Run" }
-                    }
-                }
-            }
-        }
-    };
-
+    let data = RunModalData::from_template(&job_template, &namespace, &name);
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
-        .body(markup.into_string())
+        .body(render_run_modal(&data).into_string())
 }
 
 #[derive(Deserialize)]
@@ -738,6 +865,32 @@ pub struct RunJobForm {
     args: Option<String>,
     #[serde(flatten)]
     extra: std::collections::HashMap<String, String>,
+}
+
+/// Collect `env_name_N` / `env_value_N` pairs, ordered by N.
+fn parse_form_env(form: &RunJobForm) -> Vec<(String, String)> {
+    let mut indexed: Vec<(usize, String, String)> = form
+        .extra
+        .iter()
+        .filter_map(|(key, env_name)| {
+            let index: usize = key.strip_prefix("env_name_")?.parse().ok()?;
+            if env_name.is_empty() {
+                return None;
+            }
+            let value = form
+                .extra
+                .get(&format!("env_value_{}", index))
+                .cloned()
+                .unwrap_or_default();
+            Some((index, env_name.clone(), value))
+        })
+        .collect();
+
+    indexed.sort_by_key(|(index, _, _)| *index);
+    indexed
+        .into_iter()
+        .map(|(_, env_name, value)| (env_name, value))
+        .collect()
 }
 
 #[post("/job-templates/{namespace}/{name}/run")]
@@ -758,35 +911,22 @@ pub async fn job_template_run(
         }
     };
 
-    // Parse args from the textarea (one per line, skip blanks)
-    let args: Vec<String> = form
-        .args
-        .as_deref()
-        .unwrap_or("")
-        .lines()
-        .map(|l| l.to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
+    let args_line = form.args.clone().unwrap_or_default();
+    let form_env = parse_form_env(&form);
 
-    // Parse editable env vars from the form's flat key-value pairs
-    let mut form_env: Vec<(String, String)> = Vec::new();
-    for i in 0..100 {
-        let env_name_key = format!("env_name_{}", i);
-        let env_value_key = format!("env_value_{}", i);
-        match (
-            form.extra.get(&env_name_key),
-            form.extra.get(&env_value_key),
-        ) {
-            (Some(env_name), Some(env_value)) if !env_name.is_empty() => {
-                form_env.push((env_name.clone(), env_value.clone()));
-            }
-            _ => {
-                if i > 20 {
-                    break;
-                }
-            }
+    // The container is exec'd without a shell, so the single-line arguments
+    // field is split here using shell quoting rules.
+    let args = match shell_words::split(&args_line) {
+        Ok(args) => args,
+        Err(_) => {
+            let mut data = RunModalData::from_template(&job_template, &namespace, &name);
+            data.apply_submission(args_line, form_env);
+            data.error = Some("Unbalanced quote in arguments.".to_string());
+            return HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .body(render_run_modal(&data).into_string());
         }
-    }
+    };
 
     let job =
         match crate::kubernetes::job_create::build_job(&job_template, Some(args), Some(form_env)) {
@@ -822,7 +962,6 @@ pub async fn job_template_run(
         }
     }
 }
-
 fn render_modal_result(success: bool, message: &str) -> String {
     let markup = html! {
         dialog id="run-job-dialog" class="modal" open {

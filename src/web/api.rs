@@ -484,7 +484,14 @@ pub(crate) async fn run_job_inner(
 
     let env_vec = env.map(|m| m.into_iter().collect::<Vec<_>>());
 
-    let job = crate::kubernetes::job_create::build_job(&job_template, args, env_vec)?;
+    let job = crate::kubernetes::job_create::build_job(
+        &job_template,
+        crate::kubernetes::job_create::JobOverrides {
+            args,
+            env: env_vec,
+            ..Default::default()
+        },
+    )?;
 
     let job_name = job.metadata.name.clone().unwrap_or_default();
     let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);

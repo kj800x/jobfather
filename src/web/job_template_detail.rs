@@ -595,7 +595,9 @@ struct RunModalData {
     namespace: String,
     name: String,
     image: String,
-    command: Vec<String>,
+    /// The container's command as a shell-quoted line, or None when the template
+    /// leaves the image's entrypoint alone.
+    command_line: Option<String>,
     /// Plain-value env vars the user may edit. Names come from the template.
     editable: Vec<(String, String)>,
     /// CICD_* env vars: shown, submitted, but not editable.
@@ -606,7 +608,8 @@ struct RunModalData {
     extra: Vec<(String, String)>,
     /// Arguments as a single shell-quoted line.
     args_line: String,
-    error: Option<String>,
+    command_error: Option<String>,
+    args_error: Option<String>,
 }
 
 impl RunModalData {
@@ -664,19 +667,31 @@ impl RunModalData {
                 .and_then(|i| i.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
-            command: string_list("command"),
+            command_line: match string_list("command") {
+                command if command.is_empty() => None,
+                command => Some(shell_words::join(command)),
+            },
             args_line: shell_words::join(string_list("args")),
             editable,
             locked,
             refs,
             extra: Vec::new(),
-            error: None,
+            command_error: None,
+            args_error: None,
         }
     }
 
     /// Overlay what the user submitted on top of the template's values, so a
     /// re-rendered modal shows their edits rather than resetting them.
-    fn apply_submission(&mut self, args_line: String, submitted_env: Vec<(String, String)>) {
+    fn apply_submission(
+        &mut self,
+        command_line: Option<String>,
+        args_line: String,
+        submitted_env: Vec<(String, String)>,
+    ) {
+        if self.command_line.is_some() {
+            self.command_line = command_line;
+        }
         self.args_line = args_line;
         for (env_name, value) in submitted_env {
             if env_name.starts_with(CICD_ENV_PREFIX) {
@@ -691,6 +706,14 @@ impl RunModalData {
 
     fn env_count(&self) -> usize {
         self.editable.len() + self.locked.len() + self.refs.len() + self.extra.len()
+    }
+}
+
+fn field_class(has_error: bool) -> &'static str {
+    if has_error {
+        "args-field args-field-error"
+    } else {
+        "args-field"
     }
 }
 
@@ -720,17 +743,27 @@ fn render_run_modal(data: &RunModalData) -> Markup {
                     hx-target="#modal-container"
                     hx-swap="innerHTML" {
                     div class="modal-body" {
+                        @if let Some(command_line) = &data.command_line {
+                            div class="form-group" {
+                                label for="command" { "Command" }
+                                div class=(field_class(data.command_error.is_some())) {
+                                    input type="text" id="command" name="command" value=(command_line)
+                                        class="args-input" placeholder="entrypoint"
+                                        autocapitalize="off" autocorrect="off" spellcheck="false";
+                                }
+                                @if let Some(error) = &data.command_error {
+                                    div class="form-error" { (error) }
+                                }
+                            }
+                        }
                         div class="form-group" {
                             label for="args" { "Arguments" }
-                            div class=(if data.error.is_some() { "args-field args-field-error" } else { "args-field" }) {
-                                @if !data.command.is_empty() {
-                                    span class="args-command" { (shell_words::join(&data.command)) }
-                                }
+                            div class=(field_class(data.args_error.is_some())) {
                                 input type="text" id="args" name="args" value=(data.args_line)
                                     class="args-input" placeholder="--flag value"
                                     autocapitalize="off" autocorrect="off" spellcheck="false";
                             }
-                            @if let Some(error) = &data.error {
+                            @if let Some(error) = &data.args_error {
                                 div class="form-error" { (error) }
                             }
                         }
@@ -862,6 +895,7 @@ pub async fn job_template_run_modal(
 
 #[derive(Deserialize)]
 pub struct RunJobForm {
+    command: Option<String>,
     args: Option<String>,
     #[serde(flatten)]
     extra: std::collections::HashMap<String, String>,
@@ -911,33 +945,45 @@ pub async fn job_template_run(
         }
     };
 
+    let command_line = form.command.clone();
     let args_line = form.args.clone().unwrap_or_default();
     let form_env = parse_form_env(&form);
 
-    // The container is exec'd without a shell, so the single-line arguments
-    // field is split here using shell quoting rules.
-    let args = match shell_words::split(&args_line) {
-        Ok(args) => args,
-        Err(_) => {
+    // The container is exec'd without a shell, so these single-line fields are
+    // split here using shell quoting rules.
+    let command = command_line.as_deref().map(shell_words::split).transpose();
+    let args = shell_words::split(&args_line);
+
+    let (command, args) = match (command, args) {
+        (Ok(command), Ok(args)) => (command, args),
+        (command, args) => {
+            let unbalanced = "Unbalanced quote.".to_string();
             let mut data = RunModalData::from_template(&job_template, &namespace, &name);
-            data.apply_submission(args_line, form_env);
-            data.error = Some("Unbalanced quote in arguments.".to_string());
+            data.apply_submission(command_line, args_line, form_env);
+            data.command_error = command.err().map(|_| unbalanced.clone());
+            data.args_error = args.err().map(|_| unbalanced);
             return HttpResponse::Ok()
                 .content_type("text/html; charset=utf-8")
                 .body(render_run_modal(&data).into_string());
         }
     };
 
-    let job =
-        match crate::kubernetes::job_create::build_job(&job_template, Some(args), Some(form_env)) {
-            Ok(job) => job,
-            Err(e) => {
-                log::error!("Failed to build job: {}", e);
-                return HttpResponse::InternalServerError()
-                    .content_type("text/html; charset=utf-8")
-                    .body(render_modal_result(false, &e));
-            }
-        };
+    let job = match crate::kubernetes::job_create::build_job(
+        &job_template,
+        crate::kubernetes::job_create::JobOverrides {
+            command,
+            args: Some(args),
+            env: Some(form_env),
+        },
+    ) {
+        Ok(job) => job,
+        Err(e) => {
+            log::error!("Failed to build job: {}", e);
+            return HttpResponse::InternalServerError()
+                .content_type("text/html; charset=utf-8")
+                .body(render_modal_result(false, &e));
+        }
+    };
 
     let job_name = job.metadata.name.clone().unwrap_or_default();
     let job_api: Api<Job> = Api::namespaced(client.get_ref().clone(), &namespace);

@@ -427,11 +427,13 @@ a:hover {
   border-radius: 8px;
   border: 1px solid var(--border-color);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
-  width: 560px;
-  max-width: 90vw;
+  width: 640px;
+  max-width: 92vw;
   max-height: 85vh;
+  max-height: 85dvh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .modal-header {
@@ -461,10 +463,20 @@ a:hover {
   color: var(--text-color);
 }
 
+/* The form wraps the body + footer, so it has to carry the flex column too or
+   the body never shrinks and the footer gets pushed out of view. */
+.modal-content > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .modal-body {
   padding: 20px;
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
 }
 
 .modal-footer {
@@ -488,81 +500,306 @@ a:hover {
   margin-bottom: 6px;
 }
 
-.form-control {
-  width: 100%;
-  padding: 6px 10px;
-  font-size: 13px;
+/* Run job modal: header identity */
+.modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.modal-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.modal-subtitle,
+.modal-subtitle-dim {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal-subtitle {
+  font-size: 12px;
+  color: var(--secondary-text);
+}
+
+.modal-subtitle-dim {
+  color: #8c959f;
+}
+
+/* Arguments: one CLI-style line, split with shell quoting on submit */
+.args-field {
+  display: flex;
+  align-items: center;
   border: 1px solid var(--border-color);
   border-radius: 6px;
-  font-family: inherit;
+  background: var(--card-bg);
+}
+
+.args-field:focus-within {
+  border-color: var(--primary-blue);
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+}
+
+.args-field-error {
+  border-color: #cf222e;
+}
+
+.args-field-error:focus-within {
+  border-color: #cf222e;
+  box-shadow: 0 0 0 3px rgba(207, 34, 46, 0.15);
+}
+
+.args-command {
+  flex-shrink: 0;
+  padding: 6px 0 6px 10px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+  color: #8c959f;
+}
+
+.args-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-color);
+}
+
+.form-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #cf222e;
+}
+
+/* Environment: every variable comes from the template, so it is one
+   collapsed section rather than three stacked lists. */
+.env-details {
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-light);
+  overflow: hidden;
+}
+
+.env-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.env-summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Disclosure triangle, drawn so it can rotate on open. */
+.env-summary::before {
+  content: "";
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--secondary-text);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s;
+}
+
+.env-details[open] > .env-summary::before {
+  transform: rotate(90deg);
+}
+
+.env-details[open] > .env-summary {
+  background: var(--bg-light);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.env-summary-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--secondary-text);
+}
+
+.env-summary-count {
+  font-size: 11px;
+  color: #8c959f;
+}
+
+.env-details-body {
+  padding: 8px 12px 12px;
+  background: var(--card-bg);
+}
+
+.env-edit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.env-key {
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-color);
+  overflow-wrap: anywhere;
+}
+
+.env-key-input,
+.env-value {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 10px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
   background: var(--card-bg);
   color: var(--text-color);
 }
 
-.form-control:focus {
+.env-key-input:focus,
+.env-value:focus {
   outline: none;
   border-color: var(--primary-blue);
   box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
 }
 
-textarea.form-control {
-  resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-  font-size: 12px;
-}
-
-.form-info {
+.env-divider {
   display: flex;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
-  font-size: 13px;
+  margin: 10px 0 6px;
 }
 
-.form-info-label {
-  font-weight: 600;
-  color: var(--secondary-text);
-  font-size: 12px;
-  min-width: 70px;
+.env-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #eaeef2;
 }
 
-.form-info code {
-  background: var(--bg-light);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 12px;
+.env-divider-label {
+  font-size: 11px;
+  color: #8c959f;
 }
 
-/* Env var rows */
-.env-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 6px;
+.env-static-row {
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 4px 0;
 }
 
-.env-name {
-  flex: 2;
-}
-
-.env-value {
-  flex: 3;
-}
-
-.env-row-readonly {
-  background: var(--bg-light);
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border-color);
-  font-size: 12px;
-}
-
-.env-ref-name {
-  font-weight: 600;
+.env-static-key,
+.env-static-value {
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
-.env-ref-source {
+.env-static-key {
   color: var(--secondary-text);
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+}
+
+.env-static-value {
+  color: #8c959f;
+}
+
+.env-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  color: var(--primary-blue);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  /* Full-screen sheet: a centered card cannot fit this form on a phone. */
+  .modal-content {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    height: 100dvh;
+    max-height: 100%;
+    max-height: 100dvh;
+    border: none;
+    border-radius: 0;
+  }
+
+  .modal-header,
+  .modal-footer {
+    padding: 12px 14px;
+  }
+
+  .modal-body {
+    padding: 14px;
+  }
+
+  .modal-footer .btn {
+    flex: 1;
+  }
+
+  .env-summary,
+  .env-add-btn {
+    min-height: 44px;
+  }
+
+  .env-add-btn {
+    justify-content: center;
+    width: 100%;
+    border: 1px dashed var(--border-color);
+    border-radius: 6px;
+    font-size: 13px;
+  }
+
+  .env-edit-row,
+  .env-static-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .env-edit-row {
+    padding: 6px 0;
+  }
+
+  .env-key,
+  .env-static-key,
+  .env-static-value {
+    font-size: 11px;
+  }
+
+  /* Inputs must be >=16px or iOS Safari zooms in on focus. */
+  .args-input,
+  .env-key-input,
+  .env-value {
+    font-size: 16px;
+  }
+
+  .args-input,
+  .env-key-input,
+  .env-value {
+    padding: 9px 10px;
+  }
 }
 
 /* Result message */

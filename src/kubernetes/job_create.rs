@@ -5,11 +5,17 @@ use kube::ResourceExt;
 
 use crate::kubernetes::JobTemplate;
 
-pub fn build_job(
-    job_template: &JobTemplate,
-    args: Option<Vec<String>>,
-    env: Option<Vec<(String, String)>>,
-) -> Result<Job, String> {
+/// Per-run overrides applied to the JobTemplate's first container. `None` leaves
+/// the template's value untouched.
+#[derive(Default)]
+pub struct JobOverrides {
+    pub command: Option<Vec<String>>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<Vec<(String, String)>>,
+}
+
+pub fn build_job(job_template: &JobTemplate, overrides: JobOverrides) -> Result<Job, String> {
+    let JobOverrides { command, args, env } = overrides;
     let namespace = job_template
         .metadata
         .namespace
@@ -27,7 +33,7 @@ pub fn build_job(
         volumes.push(serde_json::json!({"name": "job-output", "emptyDir": {}}));
     }
 
-    // Modify the first container: add volume mount, optionally override args and env
+    // Modify the first container: add volume mount, then apply any overrides
     if let Some(containers) = pod_spec
         .get_mut("containers")
         .and_then(|c| c.as_array_mut())
@@ -39,6 +45,23 @@ pub fn build_job(
         }
         if let Some(mounts) = container["volumeMounts"].as_array_mut() {
             mounts.push(serde_json::json!({"name": "job-output", "mountPath": "/job-output"}));
+        }
+
+        // Override the command if provided. An empty override removes the key so
+        // the image's entrypoint applies again.
+        if let Some(ref override_command) = command {
+            match container.as_object_mut() {
+                Some(obj) if override_command.is_empty() => {
+                    obj.remove("command");
+                }
+                Some(obj) => {
+                    obj.insert(
+                        "command".to_string(),
+                        serde_json::to_value(override_command).unwrap_or_default(),
+                    );
+                }
+                None => {}
+            }
         }
 
         // Override args if provided

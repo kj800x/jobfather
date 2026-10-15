@@ -62,7 +62,7 @@ All files are optional. Write only the ones your job needs.
 3. When the main container exits, Kubernetes sends SIGTERM to the sidecar
 4. The sidecar uploads each found output file to Jobfather's API (`PUT /api/jobs/{ns}/{name}/output/{filename}`)
 5. On cleanup, the reconciler copies output from the upload table to the archived job record, then deletes the temporary rows
-6. The web UI displays each output type: JSON and XML in code blocks, markdown as preformatted text, and the archive as a download link
+6. The web UI displays each output type: JSON and XML in code blocks, markdown rendered as formatted HTML (raw HTML in the markdown is escaped), and the archive as a download link
 
 The sidecar uses `curlimages/curl` and is implemented as a native Kubernetes sidecar container (`initContainers` with `restartPolicy: Always`, requires K8s 1.28+).
 

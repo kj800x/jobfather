@@ -805,7 +805,7 @@ fn render_output_sections(
                 div class="output-section" {
                     div class="output-section-header" { "report.md" }
                     div class="output-viewer output-markdown" {
-                        pre { (md) }
+                        (PreEscaped(crate::markdown::render(md)))
                     }
                 }
             }

@@ -60,6 +60,7 @@ Prometheus metrics are served at `/api/metrics`. Key metrics:
 - `src/metrics.rs` — Prometheus metric definitions and update logic
 - `src/snapshot.rs` — tarball extraction, baseline comparison, JSON diffing
 - `src/chips.rs` — chips.json parsing and rendering
+- `src/markdown.rs` — report.md rendering (pulldown-cmark, raw HTML escaped)
 - `src/job_metrics.rs` — metrics.json parsing and the Prometheus collector for job-reported metrics
 - `src/lib.rs` — static file serving macro
 - `src/res/` — static assets (CSS, JS: htmx, idiomorph)

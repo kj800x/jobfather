@@ -444,10 +444,11 @@ pub(crate) fn get_job_output_inner(
 ) -> Result<String, String> {
     if !matches!(
         filename,
-        "result.json" | "report.md" | "chips.json" | "label.txt"
+        "result.json" | "report.md" | "chips.json" | "label.txt" | "metrics.json"
     ) {
         return Err(
-            "Only result.json, report.md, chips.json, and label.txt are available".to_string(),
+            "Only result.json, report.md, chips.json, label.txt, and metrics.json are available"
+                .to_string(),
         );
     }
 
@@ -467,6 +468,7 @@ pub(crate) fn get_job_output_inner(
             "report.md" => job.output_report_md,
             "chips.json" => job.output_chips_json,
             "label.txt" => job.output_label,
+            "metrics.json" => job.output_metrics_json,
             _ => None,
         };
         if let Some(text) = text {

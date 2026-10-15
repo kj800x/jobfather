@@ -199,6 +199,7 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         snapshot_baseline_id,
         output_chips_json: output.chips_json,
         output_label: output.label,
+        output_metrics_json: output.metrics_json,
     };
 
     // Archive to database

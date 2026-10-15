@@ -386,6 +386,7 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
         report_md: job.output_report_md.clone(),
         chips_json: job.output_chips_json.clone(),
         label: job.output_label.clone(),
+        metrics_json: job.output_metrics_json.clone(),
         test_results_xml: job.output_test_results_xml.clone(),
         archive: job.output_archive.clone(),
         test_snapshots: job.output_test_snapshots.clone(),
@@ -525,10 +526,15 @@ fn render_output_sections(
         .as_deref()
         .map(|j| crate::chips::parse(j).warnings)
         .unwrap_or_default();
+    let parsed_metrics = output
+        .metrics_json
+        .as_deref()
+        .map(crate::job_metrics::parse);
     let has_other = output.result_json.is_some()
         || output.report_md.is_some()
         || output.archive.is_some()
-        || !chip_warnings.is_empty();
+        || !chip_warnings.is_empty()
+        || parsed_metrics.is_some();
 
     if !has_tests && !has_other {
         return html! {};
@@ -730,7 +736,7 @@ fn render_output_sections(
                 div class="output-section" {
                     div class="output-section-header" { "chips.json" }
                     div class="output-viewer output-chips-warnings" {
-                        ul {
+                        ul class="output-warnings" {
                             @for w in &chip_warnings {
                                 li { (w) }
                             }
@@ -745,6 +751,53 @@ fn render_output_sections(
                     div class="output-section-header" { "report.md" }
                     div class="output-viewer output-markdown" {
                         pre { (md) }
+                    }
+                }
+            }
+
+            @if let Some(parsed) = &parsed_metrics {
+                div class="output-section" {
+                    div class="output-section-header" { "metrics.json" }
+                    div class="output-viewer output-metrics" {
+                        @if !parsed.warnings.is_empty() {
+                            ul class="output-warnings" {
+                                @for w in &parsed.warnings {
+                                    li { (w) }
+                                }
+                            }
+                        }
+                        @if !parsed.metrics.is_empty() {
+                            table class="metrics-table" {
+                                thead {
+                                    tr {
+                                        th { "Name" }
+                                        th { "Type" }
+                                        th { "Labels" }
+                                        th class="metrics-value" { "Value" }
+                                    }
+                                }
+                                tbody {
+                                    @for m in &parsed.metrics {
+                                        tr {
+                                            td { (&m.name) }
+                                            td { (m.kind.as_str()) }
+                                            td {
+                                                @for (k, v) in &m.labels {
+                                                    code class="metrics-label" { (k) "=" (v) }
+                                                    " "
+                                                }
+                                            }
+                                            td class="metrics-value" { (m.value) }
+                                        }
+                                    }
+                                }
+                            }
+                        } @else if parsed.warnings.is_empty() {
+                            span class="text-muted" { "No metrics reported." }
+                        }
+                        @if !parsed.warnings.is_empty() {
+                            pre { (output.metrics_json.as_deref().unwrap_or("")) }
+                        }
                     }
                 }
             }

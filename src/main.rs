@@ -1,5 +1,6 @@
 mod chips;
 mod db;
+mod job_metrics;
 mod kubernetes;
 mod metrics;
 mod snapshot;
@@ -145,6 +146,11 @@ async fn main() -> std::io::Result<()> {
         let conn = pool.get().expect("Failed to get database connection");
         db::migrations::migrate(conn).expect("Failed to run database migrations");
     }
+    registry
+        .register(Box::new(job_metrics::JobOutputMetricsCollector::new(
+            pool.clone(),
+        )))
+        .expect("Failed to register job output metrics collector");
 
     let reconciler_client = kube::Client::try_default()
         .await

@@ -387,6 +387,7 @@ async fn render_live_job(
                     }
                 }
             }
+            (render_commands(&crate::kubernetes::job_command::container_commands(job)))
         }
 
         @let snap_ctx = output.test_snapshots.as_ref().and_then(|tarball| {
@@ -500,6 +501,11 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
                     span class="info-tile-value" { (&job.archived_at) }
                 }
             }
+            @if let Some(commands) = job.commands_json.as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<crate::kubernetes::job_command::ContainerCommand>>(j).ok())
+            {
+                (render_commands(&commands))
+            }
         }
 
         @let snap_ctx = job.snapshot_diff_json.as_ref()
@@ -556,6 +562,33 @@ fn render_hero_title(label: Option<&str>, name: &str) -> Markup {
             }
         } @else {
             span class="info-hero-title" { (name) }
+        }
+    }
+}
+
+/// Show the command line each container ran with, labelled by container name
+/// when the job has more than one.
+fn render_commands(commands: &[crate::kubernetes::job_command::ContainerCommand]) -> Markup {
+    let multiple = commands.len() > 1;
+    html! {
+        @if !commands.is_empty() {
+            div class="info-card-commands" {
+                @for c in commands {
+                    div class="info-command" {
+                        span class="info-tile-label" {
+                            "Command"
+                            @if multiple {
+                                " · " (&c.container)
+                            }
+                        }
+                        @if let Some(line) = c.display() {
+                            pre class="command-line" { (line) }
+                        } @else {
+                            span class="text-muted" { "Image entrypoint" }
+                        }
+                    }
+                }
+            }
         }
     }
 }

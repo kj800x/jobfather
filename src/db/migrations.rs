@@ -102,6 +102,7 @@ pub fn migrate(
                 PRIMARY KEY (namespace, job_template, name, labels_json, kind)
             );",
         ),
+        M::up("ALTER TABLE archived_job ADD COLUMN commands_json TEXT;"),
     ]);
 
     migrations.to_latest(&mut conn)?;

@@ -2,6 +2,7 @@ mod chips;
 mod db;
 mod job_metrics;
 mod kubernetes;
+mod markdown;
 mod metrics;
 mod snapshot;
 mod web;

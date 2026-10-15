@@ -305,6 +305,7 @@ async fn render_live_job(
                     }
                 }
             }
+            (render_info_card_chips(output.chips_json.as_deref()))
             div class="info-card-grid" {
                 @if let Some(jt) = jt_ref {
                     div class="info-tile" {
@@ -383,6 +384,7 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
     let output = JobOutput {
         result_json: job.output_result_json.clone(),
         report_md: job.output_report_md.clone(),
+        chips_json: job.output_chips_json.clone(),
         test_results_xml: job.output_test_results_xml.clone(),
         archive: job.output_archive.clone(),
         test_snapshots: job.output_test_snapshots.clone(),
@@ -410,6 +412,7 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
                     }
                 }
             }
+            (render_info_card_chips(output.chips_json.as_deref()))
             div class="info-card-grid" {
                 div class="info-tile" {
                     span class="info-tile-label" { "Job Template" }
@@ -486,6 +489,15 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
     }
 }
 
+fn render_info_card_chips(chips_json: Option<&str>) -> Markup {
+    let chips = crate::chips::parse_opt(chips_json);
+    html! {
+        @if !chips.is_empty() {
+            div class="info-card-chips" { (crate::chips::render(&chips)) }
+        }
+    }
+}
+
 fn render_output_sections(
     output: &JobOutput,
     namespace: &str,
@@ -493,8 +505,15 @@ fn render_output_sections(
     snap_ctx: Option<&SnapshotContext>,
 ) -> Markup {
     let has_tests = output.test_results_xml.is_some() || snap_ctx.is_some();
-    let has_other =
-        output.result_json.is_some() || output.report_md.is_some() || output.archive.is_some();
+    let chip_warnings = output
+        .chips_json
+        .as_deref()
+        .map(|j| crate::chips::parse(j).warnings)
+        .unwrap_or_default();
+    let has_other = output.result_json.is_some()
+        || output.report_md.is_some()
+        || output.archive.is_some()
+        || !chip_warnings.is_empty();
 
     if !has_tests && !has_other {
         return html! {};
@@ -689,6 +708,20 @@ fn render_output_sections(
                 div class="output-section" {
                     div class="output-section-header" { "result.json" }
                     pre class="output-viewer output-json" { (json) }
+                }
+            }
+
+            @if !chip_warnings.is_empty() {
+                div class="output-section" {
+                    div class="output-section-header" { "chips.json" }
+                    div class="output-viewer output-chips-warnings" {
+                        ul {
+                            @for w in &chip_warnings {
+                                li { (w) }
+                            }
+                        }
+                        pre { (output.chips_json.as_deref().unwrap_or("")) }
+                    }
                 }
             }
 

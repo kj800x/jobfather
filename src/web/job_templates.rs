@@ -41,12 +41,17 @@ pub async fn job_templates_page(_client: web::Data<Client>) -> impl Responder {
         .body(markup.into_string())
 }
 
+struct LastRun {
+    badge_class: &'static str,
+    status_text: &'static str,
+    chips: Vec<crate::chips::Chip>,
+}
+
 struct TemplateRow {
     name: String,
     namespace: String,
     schedule: Option<String>,
-    /// (badge_class, status_text)
-    last_run: Option<(&'static str, &'static str)>,
+    last_run: Option<LastRun>,
     /// None if not AT or no completed runs; Some(true) = passed, Some(false) = failed
     at_status: Option<bool>,
 }
@@ -103,6 +108,11 @@ pub async fn job_templates_fragment(
         })
         .collect();
 
+    let has_any_chips = rows
+        .iter()
+        .any(|r| r.last_run.as_ref().is_some_and(|lr| !lr.chips.is_empty()));
+    let col_count = if has_any_chips { 6 } else { 5 };
+
     let markup = html! {
         table class="jt-table" {
             thead {
@@ -111,13 +121,16 @@ pub async fn job_templates_fragment(
                     th { "Namespace" }
                     th { "Schedule" }
                     th { "Last Run" }
+                    @if has_any_chips {
+                        th class="chips-col" { "Chips" }
+                    }
                     th { "AT Status" }
                 }
             }
             tbody {
                 @if rows.is_empty() {
                     tr {
-                        td colspan="5" class="empty-state" {
+                        td colspan=(col_count) class="empty-state" {
                             "No JobTemplates found in the cluster."
                         }
                     }
@@ -138,10 +151,17 @@ pub async fn job_templates_fragment(
                             }
                         }
                         td {
-                            @if let Some((badge_class, status_text)) = row.last_run {
-                                span class=(format!("badge badge-{badge_class}")) { (status_text) }
+                            @if let Some(lr) = &row.last_run {
+                                span class=(format!("badge badge-{}", lr.badge_class)) { (lr.status_text) }
                             } @else {
                                 span class="text-muted" { "-" }
+                            }
+                        }
+                        @if has_any_chips {
+                            td class="chips-col" {
+                                @if let Some(lr) = &row.last_run {
+                                    (crate::chips::render(&lr.chips))
+                                }
                             }
                         }
                         td {
@@ -164,14 +184,15 @@ pub async fn job_templates_fragment(
         .body(markup.into_string())
 }
 
-/// Get the status of the most recent job (live or archived) for a template.
+/// Get the status and chips of the most recent job (live or archived) for a template.
+/// A live run that hasn't finished yet shows its status with no chips.
 fn most_recent_status(
     jt_uid: &str,
     live_jobs: &[Job],
     jt_name: &str,
     jt_namespace: &str,
     conn: Option<&Conn>,
-) -> Option<(&'static str, &'static str)> {
+) -> Option<LastRun> {
     // Find the most recent live job owned by this template
     let mut best_live: Option<(&Job, String)> = None;
     for job in live_jobs {
@@ -201,27 +222,60 @@ fn most_recent_status(
     }
 
     // Find the most recent archived job
-    let archived: Option<(String, String)> = conn.and_then(|c| {
+    let archived: Option<(String, String, Option<String>)> = conn.and_then(|c| {
         c.query_row(
-            "SELECT status, start_time FROM archived_job
+            "SELECT status, start_time, output_chips_json FROM archived_job
              WHERE job_template_name = ?1 AND job_template_namespace = ?2
              ORDER BY start_time DESC LIMIT 1",
             params![jt_name, jt_namespace],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
         .ok()
     });
 
+    let live_last_run = |job: &Job| {
+        let (badge_class, status_text) = live_job_status(job);
+        let finished = matches!(status_text, "Succeeded" | "Failed");
+        let chips = match conn {
+            Some(c) if finished => crate::chips::parse_opt(
+                crate::db::job_output::get_string(&job.name_any(), jt_namespace, "chips.json", c)
+                    .as_deref(),
+            ),
+            _ => vec![],
+        };
+        LastRun {
+            badge_class,
+            status_text,
+            chips,
+        }
+    };
+    let archived_last_run = |status: &str, chips_json: Option<&str>| {
+        let (badge_class, status_text) = archived_status_badge(status);
+        LastRun {
+            badge_class,
+            status_text,
+            chips: crate::chips::parse_opt(chips_json),
+        }
+    };
+
     match (&best_live, &archived) {
-        (Some((job, live_start)), Some((_, arch_start))) => {
+        (Some((job, live_start)), Some((status, arch_start, chips_json))) => {
             if live_start >= arch_start {
-                Some(live_job_status(job))
+                Some(live_last_run(job))
             } else {
-                Some(archived_status_badge(&archived.unwrap().0))
+                Some(archived_last_run(status, chips_json.as_deref()))
             }
         }
-        (Some((job, _)), None) => Some(live_job_status(job)),
-        (None, Some((status, _))) => Some(archived_status_badge(status)),
+        (Some((job, _)), None) => Some(live_last_run(job)),
+        (None, Some((status, _, chips_json))) => {
+            Some(archived_last_run(status, chips_json.as_deref()))
+        }
         (None, None) => None,
     }
 }

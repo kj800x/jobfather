@@ -5,6 +5,7 @@ use rusqlite::params;
 const VALID_FILES: &[&str] = &[
     "result.json",
     "report.md",
+    "chips.json",
     "test-results.xml",
     "archive.tar.gz",
     "test-snapshots.tar.gz",

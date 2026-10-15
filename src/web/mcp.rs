@@ -181,13 +181,13 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_job_output",
-            "description": "Get job output file content (result.json or report.md)",
+            "description": "Get job output file content (result.json, report.md, or chips.json)",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "namespace": {"type": "string", "description": "Kubernetes namespace"},
                     "name": {"type": "string", "description": "Job name"},
-                    "filename": {"type": "string", "description": "Output filename: 'result.json' or 'report.md'", "enum": ["result.json", "report.md"]}
+                    "filename": {"type": "string", "description": "Output filename: 'result.json', 'report.md', or 'chips.json'", "enum": ["result.json", "report.md", "chips.json"]}
                 },
                 "required": ["namespace", "name", "filename"]
             }

@@ -1,5 +1,4 @@
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -20,8 +19,6 @@ struct Context {
     client: Client,
     pool: Pool<SqliteConnectionManager>,
     metrics: Arc<Metrics>,
-    /// UIDs of jobs for which completion metrics have already been recorded.
-    metrics_recorded: Mutex<HashSet<String>>,
 }
 
 pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>, metrics: Arc<Metrics>) {
@@ -31,7 +28,6 @@ pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>, metrics: A
         client: client.clone(),
         pool,
         metrics,
-        metrics_recorded: Mutex::new(HashSet::new()),
     });
 
     Controller::new(job_api, Default::default())
@@ -48,12 +44,7 @@ pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>, metrics: A
 
 async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Error> {
     // Only process jobs owned by a JobTemplate
-    let owner_ref = match job
-        .metadata
-        .owner_references
-        .as_ref()
-        .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"))
-    {
+    let owner_ref = match job_template_owner(&job) {
         Some(r) => r,
         None => return Ok(Action::await_change()),
     };
@@ -70,31 +61,7 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         }
     };
 
-    // Record completion metrics once per job
-    let job_uid = job.metadata.uid.clone().unwrap_or_default();
-    {
-        let mut recorded = ctx
-            .metrics_recorded
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if recorded.insert(job_uid.clone()) {
-            let status = job_status_string(&job);
-            let duration_seconds = job
-                .status
-                .as_ref()
-                .and_then(|s| s.start_time.as_ref())
-                .map(|t| (completion_time - t.0).num_seconds());
-            ctx.metrics.record_job_completion(
-                &namespace,
-                &owner_ref.name,
-                &status,
-                duration_seconds,
-            );
-        }
-        ctx.metrics
-            .reconciler_tracked_jobs
-            .set(recorded.len() as f64);
-    }
+    record_completion(&job, &ctx.metrics);
 
     // Fetch the parent JobTemplate to get cleanupAfter
     let jt_api: Api<JobTemplate> = Api::namespaced(ctx.client.clone(), &namespace);
@@ -127,15 +94,77 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         return Ok(Action::requeue(remaining));
     }
 
-    // Time to archive and delete
+    match archive_and_delete(&job, &ctx.client, &ctx.pool, &ctx.metrics).await {
+        Ok(()) => Ok(Action::await_change()),
+        Err(e) => {
+            log::error!("{}", e);
+            Ok(Action::requeue(Duration::from_secs(30)))
+        }
+    }
+}
+
+fn job_template_owner(
+    job: &Job,
+) -> Option<&k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference> {
+    job.metadata
+        .owner_references
+        .as_ref()
+        .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"))
+}
+
+/// Record completion metrics for a finished job (once per job UID).
+fn record_completion(job: &Job, metrics: &Metrics) {
+    let (Some(owner_ref), Some(completion_time)) = (job_template_owner(job), terminal_time(job))
+    else {
+        return;
+    };
+    let duration_seconds = job
+        .status
+        .as_ref()
+        .and_then(|s| s.start_time.as_ref())
+        .map(|t| (completion_time - t.0).num_seconds());
+    metrics.record_job_completion_once(
+        &job.uid().unwrap_or_default(),
+        &job.namespace().unwrap_or_default(),
+        &owner_ref.name,
+        &job_status_string(job),
+        duration_seconds,
+    );
+}
+
+/// Archive a finished job (logs, events, output) to SQLite and delete it from
+/// Kubernetes. Used by the reconciler once `cleanupAfter` has elapsed, and by the
+/// UI's "Clean up" button to do it early.
+pub async fn archive_and_delete(
+    job: &Job,
+    client: &Client,
+    pool: &Pool<SqliteConnectionManager>,
+    metrics: &Metrics,
+) -> Result<(), String> {
+    let namespace = job.namespace().unwrap_or_default();
+    let job_name = job.name_any();
+    let job_uid = job.uid().unwrap_or_default();
+
+    let owner_ref = job_template_owner(job).ok_or_else(|| {
+        format!(
+            "Job {}/{} is not owned by a JobTemplate",
+            namespace, job_name
+        )
+    })?;
+    let completion_time = terminal_time(job)
+        .ok_or_else(|| format!("Job {}/{} has not finished yet", namespace, job_name))?;
+
+    // Make sure completion metrics aren't lost if this runs before the reconciler saw the job finish
+    record_completion(job, metrics);
+
     log::info!("Archiving and deleting job {}/{}", namespace, job_name);
 
     // Fetch logs, events, and job output from the job's pod(s)
-    let logs = fetch_job_logs(&ctx.client, &namespace, &job_name).await;
-    let events = crate::kubernetes::events::fetch_job_events(&ctx.client, &namespace, &job).await;
-    let output = crate::kubernetes::job_output::JobOutput::load(&job_name, &namespace, &ctx.pool);
+    let logs = fetch_job_logs(client, &namespace, &job_name).await;
+    let events = crate::kubernetes::events::fetch_job_events(client, &namespace, job).await;
+    let output = crate::kubernetes::job_output::JobOutput::load(&job_name, &namespace, pool);
 
-    let status = job_status_string(&job);
+    let status = job_status_string(job);
     let start_time = job
         .status
         .as_ref()
@@ -149,7 +178,7 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         .map(|t| (completion_time - t.0).num_seconds());
 
     // Read snapshot status computed at upload time (not recomputed here)
-    let (snapshot_status, snapshot_diff_json, snapshot_baseline_id) = match ctx.pool.get() {
+    let (snapshot_status, snapshot_diff_json, snapshot_baseline_id) = match pool.get() {
         Ok(conn) => {
             let status =
                 crate::db::job_output::get_string(&job_name, &namespace, "_snapshot_status", &conn);
@@ -180,7 +209,7 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         namespace: namespace.clone(),
         job_template_name: owner_ref.name.clone(),
         job_template_namespace: namespace.clone(),
-        uid: job.uid().unwrap_or_default(),
+        uid: job_uid.clone(),
         status,
         start_time,
         completion_time: comp_time_str,
@@ -203,43 +232,33 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
     };
 
     // Archive to database
-    match ctx.pool.get() {
-        Ok(conn) => {
-            if let Err(e) = ArchivedJob::upsert(&egg, &conn) {
-                log::error!("Failed to archive job {}/{}: {}", namespace, job_name, e);
-                return Ok(Action::requeue(Duration::from_secs(30)));
-            }
-            // Clean up temporary job output rows
-            let _ = crate::db::job_output::delete_for_job(&job_name, &namespace, &conn);
-        }
-        Err(e) => {
-            log::error!("Failed to get database connection: {}", e);
-            return Ok(Action::requeue(Duration::from_secs(30)));
-        }
-    }
+    let conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get database connection: {}", e))?;
+    ArchivedJob::upsert(&egg, &conn)
+        .map_err(|e| format!("Failed to archive job {}/{}: {}", namespace, job_name, e))?;
+    // Clean up temporary job output rows
+    let _ = crate::db::job_output::delete_for_job(&job_name, &namespace, &conn);
 
-    // Delete the job from kubernetes
-    let job_api: Api<Job> = Api::namespaced(ctx.client.clone(), &namespace);
+    // Delete the job (and its pods) from kubernetes
+    let job_api: Api<Job> = Api::namespaced(client.clone(), &namespace);
     let dp = DeleteParams {
         propagation_policy: Some(kube::api::PropagationPolicy::Background),
         ..Default::default()
     };
-    if let Err(e) = job_api.delete(&job_name, &dp).await {
-        log::error!("Failed to delete job {}/{}: {}", namespace, job_name, e);
-        return Ok(Action::requeue(Duration::from_secs(30)));
-    }
+    job_api
+        .delete(&job_name, &dp)
+        .await
+        .map_err(|e| format!("Failed to delete job {}/{}: {}", namespace, job_name, e))?;
 
-    // Clean up metrics tracking for this job
-    if let Ok(mut recorded) = ctx.metrics_recorded.lock() {
-        recorded.remove(&job_uid);
-    }
+    metrics.forget_job_completion(&job_uid);
 
     log::info!(
         "Successfully archived and deleted job {}/{}",
         namespace,
         job_name
     );
-    Ok(Action::await_change())
+    Ok(())
 }
 
 fn error_policy(_job: Arc<Job>, error: &kube::Error, _ctx: Arc<Context>) -> Action {

@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::Mutex;
+
 use chrono::{DateTime, Utc};
 use k8s_openapi::api::batch::v1::Job;
 use kube::{Api, Client, ResourceExt};
@@ -27,6 +30,8 @@ pub struct Metrics {
     pub test_case_duration_seconds: GaugeVec,
     pub scheduler_tick_duration_seconds: Histogram,
     pub reconciler_tracked_jobs: Gauge,
+    /// UIDs of jobs for which completion metrics have already been recorded.
+    completions_recorded: Mutex<HashSet<String>>,
 }
 
 impl Metrics {
@@ -166,7 +171,37 @@ impl Metrics {
             test_case_duration_seconds,
             scheduler_tick_duration_seconds,
             reconciler_tracked_jobs,
+            completions_recorded: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Record a job's completion metrics unless they were already recorded for this UID.
+    pub fn record_job_completion_once(
+        &self,
+        uid: &str,
+        namespace: &str,
+        job_template: &str,
+        status: &str,
+        duration_seconds: Option<i64>,
+    ) {
+        let mut recorded = self
+            .completions_recorded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if recorded.insert(uid.to_string()) {
+            self.record_job_completion(namespace, job_template, status, duration_seconds);
+        }
+        self.reconciler_tracked_jobs.set(recorded.len() as f64);
+    }
+
+    /// Stop tracking a job's UID once it has been archived and deleted.
+    pub fn forget_job_completion(&self, uid: &str) {
+        let mut recorded = self
+            .completions_recorded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        recorded.remove(uid);
+        self.reconciler_tracked_jobs.set(recorded.len() as f64);
     }
 
     /// Record a job completion event (called from the reconciler at archival time).

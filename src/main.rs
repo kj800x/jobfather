@@ -89,6 +89,7 @@ async fn start_http(
             .service(web::job_template_run)
             .service(web::job_detail_page)
             .service(web::job_detail_fragment)
+            .service(web::job_cleanup)
             .service(web::job_output_archive)
             .service(web::job_output_test_snapshots)
             .service(web::accept_snapshots)

@@ -379,6 +379,10 @@ a:hover {
   gap: 8px;
 }
 
+.info-hero-actions .info-hero-duration {
+  margin-left: 8px;
+}
+
 
 .info-card-grid {
   display: grid;

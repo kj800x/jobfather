@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, get, web};
+use actix_web::{HttpResponse, Responder, get, post, web};
 use k8s_openapi::api::batch::v1::Job;
 use kube::api::LogParams;
 use kube::{Api, Client, ResourceExt};
@@ -170,6 +170,47 @@ pub async fn job_detail_fragment(
     }
 }
 
+/// Archive and delete a finished live job now instead of waiting for `cleanupAfter`.
+#[post("/jobs/{namespace}/{name}/cleanup")]
+pub async fn job_cleanup(
+    path: web::Path<(String, String)>,
+    client: web::Data<Client>,
+    pool: web::Data<Pool<SqliteConnectionManager>>,
+    metrics: web::Data<std::sync::Arc<crate::metrics::Metrics>>,
+) -> impl Responder {
+    let (namespace, name) = path.into_inner();
+
+    let job_api: Api<Job> = Api::namespaced(client.get_ref().clone(), &namespace);
+    let job = match job_api.get(&name).await {
+        Ok(job) => job,
+        // Already gone (e.g. the reconciler got there first); the page will show the archived job
+        Err(_) => {
+            return HttpResponse::Ok()
+                .insert_header(("HX-Refresh", "true"))
+                .finish();
+        }
+    };
+
+    // htmx only swaps 2xx responses, so errors are returned as 200 with a message
+    if !is_terminal(&job) {
+        return HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body("Job has not finished yet");
+    }
+
+    match crate::kubernetes::reconciler::archive_and_delete(&job, &client, &pool, &metrics).await {
+        Ok(()) => HttpResponse::Ok()
+            .insert_header(("HX-Refresh", "true"))
+            .finish(),
+        Err(e) => {
+            log::error!("{}", e);
+            HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .body(format!("Clean up failed: {}", e))
+        }
+    }
+}
+
 #[get("/jobs/{namespace}/{name}/output/archive.tar.gz")]
 pub async fn job_output_archive(
     path: web::Path<(String, String)>,
@@ -299,9 +340,23 @@ async fn render_live_job(
                     span class=(format!("badge badge-{}", status.0)) { (status.1) }
                     span class="badge badge-info" { "Live" }
                 }
-                @if !duration.is_empty() {
-                    div class="info-hero-duration" {
-                        span class="info-hero-duration-value" { (duration) }
+                div class="info-hero-actions" {
+                    @if is_terminal(job) {
+                        span id="cleanup-result" class="text-muted" {}
+                        button class="btn btn-secondary"
+                            hx-post=(format!("/jobs/{}/{}/cleanup", namespace, job_name))
+                            hx-target="#cleanup-result"
+                            hx-swap="innerHTML"
+                            hx-disabled-elt="this"
+                            hx-confirm="Archive this job now and delete it (and its pods) from Kubernetes?"
+                            title="Archive now instead of waiting for cleanupAfter" {
+                            "Clean up"
+                        }
+                    }
+                    @if !duration.is_empty() {
+                        div class="info-hero-duration" {
+                            span class="info-hero-duration-value" { (duration) }
+                        }
                     }
                 }
             }

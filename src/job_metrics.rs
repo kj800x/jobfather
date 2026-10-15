@@ -391,7 +391,10 @@ mod tests {
             true,
         );
         // A re-upload of the same run must not double-count counters
-        run(r#"[{"name": "rows", "value": 4, "type": "counter"}]"#, false);
+        run(
+            r#"[{"name": "rows", "value": 4, "type": "counter"}]"#,
+            false,
+        );
 
         let registry = prometheus::Registry::new();
         registry
@@ -407,7 +410,9 @@ mod tests {
             text
         );
         assert!(
-            text.contains(r#"jobfather_job_output_total{job_template="tmpl",name="rows",namespace="ns"} 14"#),
+            text.contains(
+                r#"jobfather_job_output_total{job_template="tmpl",name="rows",namespace="ns"} 14"#
+            ),
             "{}",
             text
         );

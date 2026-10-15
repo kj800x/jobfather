@@ -124,7 +124,7 @@ pub fn build_job(job_template: &JobTemplate, overrides: JobOverrides) -> Result<
                 "restartPolicy": "Always",
                 "command": ["sh", "-c", concat!(
                     "upload() { ",
-                    "for f in result.json report.md chips.json label.txt test-results.xml archive.tar.gz; do ",
+                    "for f in result.json report.md chips.json label.txt metrics.json test-results.xml archive.tar.gz; do ",
                     "[ -f \"/job-output/$f\" ] && curl -sf -X PUT --data-binary \"@/job-output/$f\" ",
                     "\"$JOBFATHER_URL/api/jobs/$JOBFATHER_NAMESPACE/$JOBFATHER_JOB_NAME/output/$f\" || true; ",
                     "done; ",

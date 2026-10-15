@@ -27,6 +27,13 @@ pub async fn upload_job_output(
         }
     };
 
+    // Counters must only be incremented once per run, even if the sidecar re-uploads
+    let first_metrics_upload = filename == "metrics.json"
+        && job_output::get(&name, &namespace, &filename, &conn)
+            .ok()
+            .flatten()
+            .is_none();
+
     match job_output::upsert(&name, &namespace, &filename, &body, &conn) {
         Ok(_) => {
             log::info!("Received output {}/{}/{}", namespace, name, filename);
@@ -48,7 +55,78 @@ pub async fn upload_job_output(
         compute_and_store_snapshot_status(&name, &namespace, &body, &pool, &client).await;
     }
 
+    if filename == "metrics.json" {
+        record_job_metrics(
+            &name,
+            &namespace,
+            &body,
+            first_metrics_upload,
+            &pool,
+            &client,
+        )
+        .await;
+    }
+
     HttpResponse::Ok().body("OK")
+}
+
+/// Look up the Job in K8s to find the name of its owning JobTemplate.
+async fn owning_job_template(job_name: &str, namespace: &str, client: &Client) -> Option<String> {
+    let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);
+    match job_api.get(job_name).await {
+        Ok(job) => job
+            .metadata
+            .owner_references
+            .as_ref()
+            .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"))
+            .map(|r| r.name.clone()),
+        Err(e) => {
+            log::warn!(
+                "Failed to look up job {}/{} for its JobTemplate: {}",
+                namespace,
+                job_name,
+                e
+            );
+            None
+        }
+    }
+}
+
+async fn record_job_metrics(
+    job_name: &str,
+    namespace: &str,
+    body: &[u8],
+    include_counters: bool,
+    pool: &Pool<SqliteConnectionManager>,
+    client: &Client,
+) {
+    let Some(jt_name) = owning_job_template(job_name, namespace, client).await else {
+        return;
+    };
+
+    let parsed = crate::job_metrics::parse(&String::from_utf8_lossy(body));
+    for warning in &parsed.warnings {
+        log::warn!("metrics.json from {}/{}: {}", namespace, job_name, warning);
+    }
+
+    let Ok(mut conn) = pool.get() else {
+        return;
+    };
+    if let Err(e) = crate::db::job_output_metric::record(
+        namespace,
+        &jt_name,
+        job_name,
+        &parsed.metrics,
+        include_counters,
+        &mut conn,
+    ) {
+        log::error!(
+            "Failed to record metrics for {}/{}: {}",
+            namespace,
+            job_name,
+            e
+        );
+    }
 }
 
 async fn compute_and_store_snapshot_status(
@@ -58,27 +136,7 @@ async fn compute_and_store_snapshot_status(
     pool: &Pool<SqliteConnectionManager>,
     client: &Client,
 ) {
-    // Look up the Job in K8s to find its owning JobTemplate
-    let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);
-    let jt_name = match job_api.get(job_name).await {
-        Ok(job) => job
-            .metadata
-            .owner_references
-            .as_ref()
-            .and_then(|refs| refs.iter().find(|r| r.kind == "JobTemplate"))
-            .map(|r| r.name.clone()),
-        Err(e) => {
-            log::warn!(
-                "Failed to look up job {}/{} for snapshot status: {}",
-                namespace,
-                job_name,
-                e
-            );
-            None
-        }
-    };
-
-    let Some(jt_name) = jt_name else {
+    let Some(jt_name) = owning_job_template(job_name, namespace, client).await else {
         return;
     };
 

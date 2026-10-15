@@ -16,6 +16,7 @@ Every job gets an `emptyDir` mounted at `/job-output`. Supported files:
 - `/job-output/report.md` — human-readable markdown report
 - `/job-output/chips.json` — ordered array of `{name, value, color?}` chips (value is a string/number/bool; color is a preset `neutral|info|success|warning|danger` or `#rrggbb`), rendered in run listings, job detail, and the home page
 - `/job-output/label.txt` — run label (trimmed); stored separately from the job name and displayed as `label.or(name)` in the run listing and job detail title
+- `/job-output/metrics.json` — array of `{name, value, type?: gauge|counter, labels?}`; recorded at upload time into the `job_output_metric` table and exported on `/api/metrics` (see Metrics)
 - `/job-output/test-results.xml` — JUnit XML test results
 - `/job-output/archive.tar.gz` — escape hatch for arbitrary files
 - `/job-output/test-snapshots/` — directory of snapshot files; automatically tarred and uploaded as `test-snapshots.tar.gz`
@@ -47,6 +48,8 @@ Prometheus metrics are served at `/api/metrics`. Key metrics:
 - `jobfather_test_case_duration_seconds` — gauge per test case from JUnit XML
 - `jobfather_scheduler_tick_duration_seconds` — histogram of scheduler loop iterations
 - `jobfather_reconciler_tracked_jobs` — gauge of UIDs in the reconciler's metrics tracking set
+- `jobfather_job_output_gauge` / `..._gauge_timestamp_seconds` — job-reported gauges (value from the latest run reporting each series) and when they were reported
+- `jobfather_job_output_total` — job-reported counters, accumulated across runs (counted once per run even if re-uploaded)
 
 ## Project structure
 
@@ -57,6 +60,7 @@ Prometheus metrics are served at `/api/metrics`. Key metrics:
 - `src/metrics.rs` — Prometheus metric definitions and update logic
 - `src/snapshot.rs` — tarball extraction, baseline comparison, JSON diffing
 - `src/chips.rs` — chips.json parsing and rendering
+- `src/job_metrics.rs` — metrics.json parsing and the Prometheus collector for job-reported metrics
 - `src/lib.rs` — static file serving macro
 - `src/res/` — static assets (CSS, JS: htmx, idiomorph)
 - `kubernetes/` — CRD YAML and example manifests

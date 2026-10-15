@@ -88,6 +88,20 @@ pub fn migrate(
         ),
         M::up("ALTER TABLE archived_job ADD COLUMN output_chips_json TEXT;"),
         M::up("ALTER TABLE archived_job ADD COLUMN output_label TEXT;"),
+        M::up(
+            "ALTER TABLE archived_job ADD COLUMN output_metrics_json TEXT;
+             CREATE TABLE job_output_metric (
+                namespace TEXT NOT NULL,
+                job_template TEXT NOT NULL,
+                name TEXT NOT NULL,
+                labels_json TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                value REAL NOT NULL,
+                job_name TEXT NOT NULL,
+                updated_unix INTEGER NOT NULL,
+                PRIMARY KEY (namespace, job_template, name, labels_json, kind)
+            );",
+        ),
     ]);
 
     migrations.to_latest(&mut conn)?;

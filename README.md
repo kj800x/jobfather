@@ -50,6 +50,7 @@ All files are optional. Write only the ones your job needs.
 | `/job-output/report.md` | Markdown | Human-readable report |
 | `/job-output/chips.json` | JSON | Ordered name/value chips shown on run listings, the job detail page, and the home page (see [Chips](#chips)) |
 | `/job-output/label.txt` | Text | Human-friendly label for the run (e.g. `remux of config 10`), shown instead of the job name in the run listing and as the job detail title |
+| `/job-output/metrics.json` | JSON | Gauges and counters re-exported on `/api/metrics` (see [Job output metrics](#job-output-metrics)) |
 | `/job-output/test-results.xml` | JUnit XML | Test results for acceptance test jobs |
 | `/job-output/archive.tar.gz` | gzip tarball | Escape hatch for arbitrary output files |
 | `/job-output/test-snapshots/` | Directory | Snapshot files for baseline comparison; automatically tarred and uploaded as `test-snapshots.tar.gz` |
@@ -112,6 +113,33 @@ Prometheus metrics are served at `GET /api/metrics`. Time-since gauges are refre
 | `jobfather_test_case_duration_seconds` | Gauge | Individual test case durations from JUnit XML |
 | `jobfather_scheduler_tick_duration_seconds` | Histogram | Scheduler loop iteration duration |
 | `jobfather_reconciler_tracked_jobs` | Gauge | Number of job UIDs in the reconciler's metrics tracking set |
+| `jobfather_job_output_gauge` | Gauge | Gauges reported by jobs via `metrics.json` (see below) |
+| `jobfather_job_output_gauge_timestamp_seconds` | Gauge | Unix time each job output gauge was last reported |
+| `jobfather_job_output_total` | Counter | Counters reported by jobs via `metrics.json` (see below) |
+
+### Job output metrics
+
+Jobs can write `/job-output/metrics.json` to feed values into Prometheus/VictoriaMetrics through Jobfather's `/api/metrics` endpoint:
+
+```json
+[
+  { "name": "queue_depth", "value": 17 },
+  { "name": "latency_p95_seconds", "value": 0.42, "labels": { "endpoint": "/api" } },
+  { "name": "rows_processed", "value": 12345, "type": "counter" }
+]
+```
+
+- `name` (required): any string; exported as the `name` label
+- `value` (required): finite number
+- `type` (optional, default `gauge`): `gauge` or `counter`
+- `labels` (optional): extra labels. Names must be valid Prometheus label names; `namespace`, `job_template`, and `name` are reserved.
+
+Every series gets `namespace`, `job_template`, and `name` labels, e.g. `jobfather_job_output_gauge{namespace="ns", job_template="etl", name="queue_depth"}`.
+
+- **Gauges** hold the value from the most recent run that reported that series (regardless of run status). `jobfather_job_output_gauge_timestamp_seconds` tells you when it was reported, so stale values can be detected. A series that a job stops reporting keeps its last value.
+- **Counters** add each run's value (which must be non-negative) to a running total, so `increase()` / `rate()` give totals over time (e.g. rows processed per day).
+
+Values are recorded when the sidecar uploads `metrics.json` and persisted in SQLite, so they survive Jobfather restarts. The job detail page shows the metrics each run reported.
 
 ## Development
 

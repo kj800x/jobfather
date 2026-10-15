@@ -30,6 +30,8 @@ struct JobRow {
     snapshot_status: Option<String>,
     artifact_sha: Option<String>,
     chips: Vec<crate::chips::Chip>,
+    /// From label.txt; shown instead of the name when present.
+    label: Option<String>,
 }
 
 struct TestResultSummary {
@@ -172,10 +174,13 @@ pub async fn job_template_detail_fragment(
             .and_then(|a| a.get("artifactSha"))
             .cloned();
 
-        let chips = if is_term {
-            load_live_chips(&job_name_str, &namespace, &pool)
+        let (chips, label) = if is_term {
+            (
+                load_live_chips(&job_name_str, &namespace, &pool),
+                load_live_label(&job_name_str, &namespace, &pool),
+            )
         } else {
-            vec![]
+            (vec![], None)
         };
 
         rows.push(JobRow {
@@ -190,6 +195,7 @@ pub async fn job_template_detail_fragment(
             snapshot_status,
             artifact_sha,
             chips,
+            label,
         });
     }
 
@@ -241,6 +247,7 @@ pub async fn job_template_detail_fragment(
             snapshot_status,
             artifact_sha: job.artifact_sha.clone(),
             chips: crate::chips::parse_opt(job.output_chips_json.as_deref()),
+            label: job.output_label.clone(),
         });
     }
 
@@ -391,7 +398,12 @@ fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &st
                     tr {
                         td class="jt-name" {
                             @let display_name = row.name.strip_prefix(jt_name).and_then(|s| s.strip_prefix('-')).unwrap_or(&row.name);
-                            a href=(format!("/jobs/{}/{}", row.namespace, row.name)) { (display_name) }
+                            @let href = format!("/jobs/{}/{}", row.namespace, row.name);
+                            @if let Some(label) = &row.label {
+                                a href=(href) title=(&row.name) { (label) }
+                            } @else {
+                                a href=(href) { (display_name) }
+                            }
                         }
                         @if has_any_sha {
                             td class="badge-col badge-col-wide" {
@@ -533,6 +545,17 @@ fn load_live_chips(
     };
     crate::chips::parse_opt(
         crate::db::job_output::get_string(job_name, namespace, "chips.json", &conn).as_deref(),
+    )
+}
+
+fn load_live_label(
+    job_name: &str,
+    namespace: &str,
+    pool: &Pool<SqliteConnectionManager>,
+) -> Option<String> {
+    let conn = pool.get().ok()?;
+    crate::kubernetes::job_output::normalize_label(
+        crate::db::job_output::get_string(job_name, namespace, "label.txt", &conn).as_deref(),
     )
 }
 

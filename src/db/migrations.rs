@@ -87,6 +87,7 @@ pub fn migrate(
             ALTER TABLE archived_job ADD COLUMN snapshot_baseline_id INTEGER;",
         ),
         M::up("ALTER TABLE archived_job ADD COLUMN output_chips_json TEXT;"),
+        M::up("ALTER TABLE archived_job ADD COLUMN output_label TEXT;"),
     ]);
 
     migrations.to_latest(&mut conn)?;

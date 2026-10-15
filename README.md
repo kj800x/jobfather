@@ -49,6 +49,7 @@ All files are optional. Write only the ones your job needs.
 | `/job-output/result.json` | JSON | Structured result data (e.g. metrics, summaries, key-value results) |
 | `/job-output/report.md` | Markdown | Human-readable report |
 | `/job-output/chips.json` | JSON | Ordered name/value chips shown on run listings, the job detail page, and the home page (see [Chips](#chips)) |
+| `/job-output/label.txt` | Text | Human-friendly label for the run (e.g. `remux of config 10`), shown instead of the job name in the run listing and as the job detail title |
 | `/job-output/test-results.xml` | JUnit XML | Test results for acceptance test jobs |
 | `/job-output/archive.tar.gz` | gzip tarball | Escape hatch for arbitrary output files |
 | `/job-output/test-snapshots/` | Directory | Snapshot files for baseline comparison; automatically tarred and uploaded as `test-snapshots.tar.gz` |

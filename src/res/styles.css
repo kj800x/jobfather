@@ -248,6 +248,26 @@ a:hover {
   white-space: normal;
 }
 
+.info-card-commands {
+  padding: 14px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.command-line {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--bg-light);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .info-card-chips {
   padding: 12px 24px;
   border-bottom: 1px solid var(--border-color);

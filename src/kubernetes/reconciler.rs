@@ -229,6 +229,10 @@ pub async fn archive_and_delete(
         output_chips_json: output.chips_json,
         output_label: output.label,
         output_metrics_json: output.metrics_json,
+        commands_json: serde_json::to_string(&crate::kubernetes::job_command::container_commands(
+            job,
+        ))
+        .ok(),
     };
 
     // Archive to database

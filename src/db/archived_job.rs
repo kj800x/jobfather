@@ -7,7 +7,7 @@ const SELECT_COLUMNS: &str = "id, name, namespace, job_template_name, job_templa
      uid, status, start_time, completion_time, duration_seconds, logs, archived_at,
      output_result_json, output_report_md, output_test_results_xml, output_archive,
      output_test_snapshots, events_json, snapshot_status, snapshot_diff_json,
-     artifact_sha, config_sha, snapshot_baseline_id, output_chips_json";
+     artifact_sha, config_sha, snapshot_baseline_id, output_chips_json, output_label";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ArchivedJob {
@@ -37,6 +37,7 @@ pub struct ArchivedJob {
     pub config_sha: Option<String>,
     pub snapshot_baseline_id: Option<i64>,
     pub output_chips_json: Option<String>,
+    pub output_label: Option<String>,
 }
 
 pub struct ArchivedJobEgg {
@@ -62,6 +63,7 @@ pub struct ArchivedJobEgg {
     pub config_sha: Option<String>,
     pub snapshot_baseline_id: Option<i64>,
     pub output_chips_json: Option<String>,
+    pub output_label: Option<String>,
 }
 
 impl ArchivedJob {
@@ -91,6 +93,7 @@ impl ArchivedJob {
             config_sha: row.get(21)?,
             snapshot_baseline_id: row.get(22)?,
             output_chips_json: row.get(23)?,
+            output_label: row.get(24)?,
         })
     }
 
@@ -138,8 +141,8 @@ impl ArchivedJob {
                  uid, status, start_time, completion_time, duration_seconds, logs,
                  output_result_json, output_report_md, output_test_results_xml, output_archive,
                  output_test_snapshots, events_json, snapshot_status, snapshot_diff_json,
-                 artifact_sha, config_sha, snapshot_baseline_id, output_chips_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                 artifact_sha, config_sha, snapshot_baseline_id, output_chips_json, output_label)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
              ON CONFLICT(uid) DO UPDATE SET
                 status = excluded.status,
                 completion_time = excluded.completion_time,
@@ -168,7 +171,8 @@ impl ArchivedJob {
                     THEN archived_job.snapshot_baseline_id
                     ELSE excluded.snapshot_baseline_id
                     END,
-                output_chips_json = excluded.output_chips_json",
+                output_chips_json = excluded.output_chips_json,
+                output_label = excluded.output_label",
             params![
                 egg.name,
                 egg.namespace,
@@ -192,6 +196,7 @@ impl ArchivedJob {
                 egg.config_sha,
                 egg.snapshot_baseline_id,
                 egg.output_chips_json,
+                egg.output_label,
             ],
         )?;
         Ok(())

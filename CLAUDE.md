@@ -15,6 +15,7 @@ Every job gets an `emptyDir` mounted at `/job-output`. Supported files:
 - `/job-output/result.json` — structured JSON result data
 - `/job-output/report.md` — human-readable markdown report
 - `/job-output/chips.json` — ordered array of `{name, value, color?}` chips (value is a string/number/bool; color is a preset `neutral|info|success|warning|danger` or `#rrggbb`), rendered in run listings, job detail, and the home page
+- `/job-output/label.txt` — run label (trimmed); stored separately from the job name and displayed as `label.or(name)` in the run listing and job detail title
 - `/job-output/test-results.xml` — JUnit XML test results
 - `/job-output/archive.tar.gz` — escape hatch for arbitrary files
 - `/job-output/test-snapshots/` — directory of snapshot files; automatically tarred and uploaded as `test-snapshots.tar.gz`

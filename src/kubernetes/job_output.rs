@@ -7,6 +7,7 @@ pub struct JobOutput {
     pub result_json: Option<String>,
     pub report_md: Option<String>,
     pub chips_json: Option<String>,
+    pub label: Option<String>,
     pub test_results_xml: Option<String>,
     pub archive: Option<Vec<u8>>,
     pub test_snapshots: Option<Vec<u8>>,
@@ -18,6 +19,7 @@ impl JobOutput {
             result_json: None,
             report_md: None,
             chips_json: None,
+            label: None,
             test_results_xml: None,
             archive: None,
             test_snapshots: None,
@@ -42,6 +44,9 @@ impl JobOutput {
                 "result.json" => output.result_json = String::from_utf8(content).ok(),
                 "report.md" => output.report_md = String::from_utf8(content).ok(),
                 "chips.json" => output.chips_json = String::from_utf8(content).ok(),
+                "label.txt" => {
+                    output.label = normalize_label(String::from_utf8(content).ok().as_deref())
+                }
                 "test-results.xml" => output.test_results_xml = String::from_utf8(content).ok(),
                 "archive.tar.gz" => output.archive = Some(content),
                 "test-snapshots.tar.gz" => output.test_snapshots = Some(content),
@@ -50,4 +55,12 @@ impl JobOutput {
         }
         output
     }
+}
+
+/// Trim a label.txt value; an empty or missing label is `None`.
+pub fn normalize_label(label: Option<&str>) -> Option<String> {
+    label
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
 }

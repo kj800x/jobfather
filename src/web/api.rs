@@ -37,6 +37,7 @@ pub(crate) struct ApiJob {
     pub artifact_sha: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub chips: Vec<crate::chips::Chip>,
+    pub label: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -152,6 +153,7 @@ fn live_job_to_api(job: &Job) -> ApiJob {
         snapshot_status: None,
         artifact_sha,
         chips: vec![],
+        label: None,
     }
 }
 
@@ -169,6 +171,7 @@ fn archived_job_to_api(job: &ArchivedJob) -> ApiJob {
         snapshot_status: job.snapshot_status.clone(),
         artifact_sha: job.artifact_sha.clone(),
         chips: crate::chips::parse_opt(job.output_chips_json.as_deref()),
+        label: job.output_label.clone(),
     }
 }
 
@@ -263,6 +266,21 @@ fn case_to_api(tc: &super::junit::TestCase) -> ApiTestCase {
 
 // --- Inner functions (shared by HTTP handlers and MCP) ---
 
+/// Fill in fields of a finished live job that come from sidecar-uploaded output.
+fn fill_live_output(
+    api_job: &mut ApiJob,
+    namespace: &str,
+    conn: &r2d2::PooledConnection<SqliteConnectionManager>,
+) {
+    let get = |file: &str| crate::db::job_output::get_string(&api_job.name, namespace, file, conn);
+    let snapshot_status = get("_snapshot_status");
+    let chips = crate::chips::parse_opt(get("chips.json").as_deref());
+    let label = crate::kubernetes::job_output::normalize_label(get("label.txt").as_deref());
+    api_job.snapshot_status = snapshot_status;
+    api_job.chips = chips;
+    api_job.label = label;
+}
+
 pub(crate) async fn list_jobs_for_template_inner(
     namespace: &str,
     name: &str,
@@ -287,21 +305,7 @@ pub(crate) async fn list_jobs_for_template_inner(
                     if is_terminal(job)
                         && let Ok(conn) = pool.get()
                     {
-                        api_job.snapshot_status = crate::db::job_output::get_string(
-                            &api_job.name,
-                            namespace,
-                            "_snapshot_status",
-                            &conn,
-                        );
-                        api_job.chips = crate::chips::parse_opt(
-                            crate::db::job_output::get_string(
-                                &api_job.name,
-                                namespace,
-                                "chips.json",
-                                &conn,
-                            )
-                            .as_deref(),
-                        );
+                        fill_live_output(&mut api_job, namespace, &conn);
                     }
                     jobs.push(api_job);
                 }
@@ -333,11 +337,7 @@ pub(crate) async fn get_job_inner(
         if is_terminal(&job)
             && let Ok(conn) = pool.get()
         {
-            api_job.snapshot_status =
-                crate::db::job_output::get_string(name, namespace, "_snapshot_status", &conn);
-            api_job.chips = crate::chips::parse_opt(
-                crate::db::job_output::get_string(name, namespace, "chips.json", &conn).as_deref(),
-            );
+            fill_live_output(&mut api_job, namespace, &conn);
         }
         return Some(api_job);
     }
@@ -442,8 +442,13 @@ pub(crate) fn get_job_output_inner(
     filename: &str,
     pool: &Pool<SqliteConnectionManager>,
 ) -> Result<String, String> {
-    if !matches!(filename, "result.json" | "report.md" | "chips.json") {
-        return Err("Only result.json, report.md, and chips.json are available".to_string());
+    if !matches!(
+        filename,
+        "result.json" | "report.md" | "chips.json" | "label.txt"
+    ) {
+        return Err(
+            "Only result.json, report.md, chips.json, and label.txt are available".to_string(),
+        );
     }
 
     let conn = pool.get().map_err(|_| "Database error".to_string())?;
@@ -461,6 +466,7 @@ pub(crate) fn get_job_output_inner(
             "result.json" => job.output_result_json,
             "report.md" => job.output_report_md,
             "chips.json" => job.output_chips_json,
+            "label.txt" => job.output_label,
             _ => None,
         };
         if let Some(text) = text {

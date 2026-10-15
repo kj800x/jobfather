@@ -295,7 +295,7 @@ async fn render_live_job(
         div class="info-card" {
             div class="info-card-hero" {
                 div class="info-hero-left" {
-                    span class="info-hero-title" { (&job_name) }
+                    (render_hero_title(output.label.as_deref(), &job_name))
                     span class=(format!("badge badge-{}", status.0)) { (status.1) }
                     span class="badge badge-info" { "Live" }
                 }
@@ -385,6 +385,7 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
         result_json: job.output_result_json.clone(),
         report_md: job.output_report_md.clone(),
         chips_json: job.output_chips_json.clone(),
+        label: job.output_label.clone(),
         test_results_xml: job.output_test_results_xml.clone(),
         archive: job.output_archive.clone(),
         test_snapshots: job.output_test_snapshots.clone(),
@@ -402,7 +403,7 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
         div class="info-card" {
             div class="info-card-hero" {
                 div class="info-hero-left" {
-                    span class="info-hero-title" { (&job.name) }
+                    (render_hero_title(output.label.as_deref(), &job.name))
                     span class=(format!("badge badge-{}", badge_class)) { (&job.status) }
                     span class="badge badge-muted" { "Archived" }
                 }
@@ -485,6 +486,20 @@ fn render_archived_job(job: &ArchivedJob, pool: &Pool<SqliteConnectionManager>) 
             pre class="log-viewer" { (log_text) }
         } @else {
             div class="empty-state-box" { "No logs were captured." }
+        }
+    }
+}
+
+/// Show the job's label (from label.txt) as the title, with the real name beneath it.
+fn render_hero_title(label: Option<&str>, name: &str) -> Markup {
+    html! {
+        @if let Some(label) = label {
+            div class="info-hero-titles" {
+                span class="info-hero-title" title=(label) { (label) }
+                span class="info-hero-subtitle" { (name) }
+            }
+        } @else {
+            span class="info-hero-title" { (name) }
         }
     }
 }

@@ -6,6 +6,7 @@ const VALID_FILES: &[&str] = &[
     "result.json",
     "report.md",
     "chips.json",
+    "label.txt",
     "test-results.xml",
     "archive.tar.gz",
     "test-snapshots.tar.gz",

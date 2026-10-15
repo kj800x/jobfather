@@ -6,6 +6,7 @@ use crate::db::job_output as db;
 pub struct JobOutput {
     pub result_json: Option<String>,
     pub report_md: Option<String>,
+    pub chips_json: Option<String>,
     pub test_results_xml: Option<String>,
     pub archive: Option<Vec<u8>>,
     pub test_snapshots: Option<Vec<u8>>,
@@ -16,6 +17,7 @@ impl JobOutput {
         Self {
             result_json: None,
             report_md: None,
+            chips_json: None,
             test_results_xml: None,
             archive: None,
             test_snapshots: None,
@@ -39,6 +41,7 @@ impl JobOutput {
             match name.as_str() {
                 "result.json" => output.result_json = String::from_utf8(content).ok(),
                 "report.md" => output.report_md = String::from_utf8(content).ok(),
+                "chips.json" => output.chips_json = String::from_utf8(content).ok(),
                 "test-results.xml" => output.test_results_xml = String::from_utf8(content).ok(),
                 "archive.tar.gz" => output.archive = Some(content),
                 "test-snapshots.tar.gz" => output.test_snapshots = Some(content),

@@ -35,6 +35,8 @@ pub(crate) struct ApiJob {
     pub job_template_namespace: Option<String>,
     pub snapshot_status: Option<String>,
     pub artifact_sha: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub chips: Vec<crate::chips::Chip>,
 }
 
 #[derive(Serialize)]
@@ -149,6 +151,7 @@ fn live_job_to_api(job: &Job) -> ApiJob {
         job_template_namespace: Some(job.namespace().unwrap_or_default()),
         snapshot_status: None,
         artifact_sha,
+        chips: vec![],
     }
 }
 
@@ -165,6 +168,7 @@ fn archived_job_to_api(job: &ArchivedJob) -> ApiJob {
         job_template_namespace: Some(job.job_template_namespace.clone()),
         snapshot_status: job.snapshot_status.clone(),
         artifact_sha: job.artifact_sha.clone(),
+        chips: crate::chips::parse_opt(job.output_chips_json.as_deref()),
     }
 }
 
@@ -281,14 +285,24 @@ pub(crate) async fn list_jobs_for_template_inner(
                 if owned {
                     let mut api_job = live_job_to_api(job);
                     if is_terminal(job)
-                        && let Ok(conn) = pool.get() {
-                            api_job.snapshot_status = crate::db::job_output::get_string(
+                        && let Ok(conn) = pool.get()
+                    {
+                        api_job.snapshot_status = crate::db::job_output::get_string(
+                            &api_job.name,
+                            namespace,
+                            "_snapshot_status",
+                            &conn,
+                        );
+                        api_job.chips = crate::chips::parse_opt(
+                            crate::db::job_output::get_string(
                                 &api_job.name,
                                 namespace,
-                                "_snapshot_status",
+                                "chips.json",
                                 &conn,
-                            );
-                        }
+                            )
+                            .as_deref(),
+                        );
+                    }
                     jobs.push(api_job);
                 }
             }
@@ -296,11 +310,12 @@ pub(crate) async fn list_jobs_for_template_inner(
     }
 
     if let Ok(conn) = pool.get()
-        && let Ok(archived) = ArchivedJob::get_by_job_template(name, namespace, &conn) {
-            for job in &archived {
-                jobs.push(archived_job_to_api(job));
-            }
+        && let Ok(archived) = ArchivedJob::get_by_job_template(name, namespace, &conn)
+    {
+        for job in &archived {
+            jobs.push(archived_job_to_api(job));
         }
+    }
 
     jobs.sort_by(|a, b| b.start_time.cmp(&a.start_time));
     jobs
@@ -316,17 +331,22 @@ pub(crate) async fn get_job_inner(
     if let Ok(job) = job_api.get(name).await {
         let mut api_job = live_job_to_api(&job);
         if is_terminal(&job)
-            && let Ok(conn) = pool.get() {
-                api_job.snapshot_status =
-                    crate::db::job_output::get_string(name, namespace, "_snapshot_status", &conn);
-            }
+            && let Ok(conn) = pool.get()
+        {
+            api_job.snapshot_status =
+                crate::db::job_output::get_string(name, namespace, "_snapshot_status", &conn);
+            api_job.chips = crate::chips::parse_opt(
+                crate::db::job_output::get_string(name, namespace, "chips.json", &conn).as_deref(),
+            );
+        }
         return Some(api_job);
     }
 
     if let Ok(conn) = pool.get()
-        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
-            return Some(archived_job_to_api(&job));
-        }
+        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn)
+    {
+        return Some(archived_job_to_api(&job));
+    }
 
     None
 }
@@ -346,17 +366,18 @@ pub(crate) async fn get_job_logs_inner(
     }
 
     if let Ok(conn) = pool.get()
-        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
-            let text = job.logs.unwrap_or_default();
-            return Ok(match tail {
-                Some(n) if n > 0 => {
-                    let lines: Vec<&str> = text.lines().collect();
-                    let start = lines.len().saturating_sub(n as usize);
-                    lines[start..].join("\n")
-                }
-                _ => text,
-            });
-        }
+        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn)
+    {
+        let text = job.logs.unwrap_or_default();
+        return Ok(match tail {
+            Some(n) if n > 0 => {
+                let lines: Vec<&str> = text.lines().collect();
+                let start = lines.len().saturating_sub(n as usize);
+                lines[start..].join("\n")
+            }
+            _ => text,
+        });
+    }
 
     Err(format!("Job {}/{} not found", namespace, name))
 }
@@ -373,13 +394,14 @@ pub(crate) async fn get_job_events_inner(
     }
 
     if let Ok(conn) = pool.get()
-        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
-            return job
-                .events_json
-                .as_deref()
-                .and_then(|json| serde_json::from_str(json).ok())
-                .unwrap_or_default();
-        }
+        && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn)
+    {
+        return job
+            .events_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_default();
+    }
 
     Vec::new()
 }
@@ -420,8 +442,8 @@ pub(crate) fn get_job_output_inner(
     filename: &str,
     pool: &Pool<SqliteConnectionManager>,
 ) -> Result<String, String> {
-    if filename != "result.json" && filename != "report.md" {
-        return Err("Only result.json and report.md are available".to_string());
+    if !matches!(filename, "result.json" | "report.md" | "chips.json") {
+        return Err("Only result.json, report.md, and chips.json are available".to_string());
     }
 
     let conn = pool.get().map_err(|_| "Database error".to_string())?;
@@ -429,14 +451,16 @@ pub(crate) fn get_job_output_inner(
     if let Some(content) = crate::db::job_output::get(name, namespace, filename, &conn)
         .ok()
         .flatten()
-        && let Ok(text) = String::from_utf8(content) {
-            return Ok(text);
-        }
+        && let Ok(text) = String::from_utf8(content)
+    {
+        return Ok(text);
+    }
 
     if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn) {
         let text = match filename {
             "result.json" => job.output_result_json,
             "report.md" => job.output_report_md,
+            "chips.json" => job.output_chips_json,
             _ => None,
         };
         if let Some(text) = text {
@@ -456,15 +480,17 @@ pub(crate) fn get_snapshot_diff_inner(
 
     if let Some(diff_json) =
         crate::db::job_output::get_string(name, namespace, "_snapshot_diff_json", &conn)
-        && let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(&diff_json) {
-            return Some(build_snapshot_diff_response(&diff, name, namespace, pool));
-        }
+        && let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(&diff_json)
+    {
+        return Some(build_snapshot_diff_response(&diff, name, namespace, pool));
+    }
 
     if let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn)
         && let Some(diff_json) = &job.snapshot_diff_json
-            && let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(diff_json) {
-                return Some(build_snapshot_diff_response(&diff, name, namespace, pool));
-            }
+        && let Ok(diff) = serde_json::from_str::<crate::snapshot::SnapshotDiff>(diff_json)
+    {
+        return Some(build_snapshot_diff_response(&diff, name, namespace, pool));
+    }
 
     None
 }
@@ -538,48 +564,51 @@ fn build_snapshot_diff_response(
         });
 
     if let Some(tarball) = tarball
-        && let Ok(current) = crate::snapshot::extract_tarball(&tarball) {
-            let jt_ref = ArchivedJob::get_by_name_and_namespace(job_name, namespace, &conn)
-                .ok()
-                .flatten();
+        && let Ok(current) = crate::snapshot::extract_tarball(&tarball)
+    {
+        let jt_ref = ArchivedJob::get_by_name_and_namespace(job_name, namespace, &conn)
+            .ok()
+            .flatten();
 
-            let baseline_id = jt_ref
-                .as_ref()
-                .and_then(|j| j.snapshot_baseline_id)
-                .or_else(|| {
-                    crate::db::job_output::get_string(
-                        job_name,
-                        namespace,
-                        "_snapshot_baseline_id",
+        let baseline_id = jt_ref
+            .as_ref()
+            .and_then(|j| j.snapshot_baseline_id)
+            .or_else(|| {
+                crate::db::job_output::get_string(
+                    job_name,
+                    namespace,
+                    "_snapshot_baseline_id",
+                    &conn,
+                )
+                .and_then(|s| s.parse().ok())
+            });
+
+        let baseline = match baseline_id {
+            Some(id) => crate::db::snapshot::load_baseline_files(id, &conn),
+            None => {
+                if let Some(ref jt) = jt_ref {
+                    crate::db::snapshot::load_latest_baseline_conn(
+                        &jt.job_template_name,
+                        &jt.job_template_namespace,
                         &conn,
                     )
-                    .and_then(|s| s.parse().ok())
-                });
-
-            let baseline = match baseline_id {
-                Some(id) => crate::db::snapshot::load_baseline_files(id, &conn),
-                None => {
-                    if let Some(ref jt) = jt_ref {
-                        crate::db::snapshot::load_latest_baseline_conn(
-                            &jt.job_template_name,
-                            &jt.job_template_namespace,
-                            &conn,
-                        )
-                        .1
-                    } else {
-                        std::collections::BTreeMap::new()
-                    }
+                    .1
+                } else {
+                    std::collections::BTreeMap::new()
                 }
-            };
+            }
+        };
 
-            for f in &diff.files {
-                if f.path.ends_with(".json") && f.status == crate::snapshot::FileDiffStatus::Changed
-                    && let (Some(old), Some(new)) = (baseline.get(&f.path), current.get(&f.path))
-                        && let Some(lines) = crate::snapshot::json_diff(old, new) {
-                            json_diffs.insert(f.path.clone(), lines);
-                        }
+        for f in &diff.files {
+            if f.path.ends_with(".json")
+                && f.status == crate::snapshot::FileDiffStatus::Changed
+                && let (Some(old), Some(new)) = (baseline.get(&f.path), current.get(&f.path))
+                && let Some(lines) = crate::snapshot::json_diff(old, new)
+            {
+                json_diffs.insert(f.path.clone(), lines);
             }
         }
+    }
 
     SnapshotDiffResponse {
         diff: diff.clone(),
@@ -607,9 +636,10 @@ async fn fetch_live_logs_with_tail(
             ..Default::default()
         };
         if let Some(n) = tail
-            && n > 0 {
-                params.tail_lines = Some(n);
-            }
+            && n > 0
+        {
+            params.tail_lines = Some(n);
+        }
         if let Ok(log_str) = pod_api.logs(&pod_name, &params).await {
             if pods.items.len() > 1 {
                 all_logs.push(format!("=== Pod: {} ===\n{}", pod_name, log_str));
@@ -728,7 +758,7 @@ pub async fn api_get_job_output(
     let (namespace, name, filename) = path.into_inner();
     match get_job_output_inner(&namespace, &name, &filename, &pool) {
         Ok(text) => {
-            let content_type = if filename == "result.json" {
+            let content_type = if filename.ends_with(".json") {
                 "application/json"
             } else {
                 "text/plain"

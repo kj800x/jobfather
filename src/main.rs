@@ -1,3 +1,4 @@
+mod chips;
 mod db;
 mod kubernetes;
 mod metrics;

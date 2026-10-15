@@ -48,6 +48,7 @@ All files are optional. Write only the ones your job needs.
 |------|--------|---------|
 | `/job-output/result.json` | JSON | Structured result data (e.g. metrics, summaries, key-value results) |
 | `/job-output/report.md` | Markdown | Human-readable report |
+| `/job-output/chips.json` | JSON | Ordered name/value chips shown on run listings, the job detail page, and the home page (see [Chips](#chips)) |
 | `/job-output/test-results.xml` | JUnit XML | Test results for acceptance test jobs |
 | `/job-output/archive.tar.gz` | gzip tarball | Escape hatch for arbitrary output files |
 | `/job-output/test-snapshots/` | Directory | Snapshot files for baseline comparison; automatically tarred and uploaded as `test-snapshots.tar.gz` |
@@ -66,6 +67,25 @@ The sidecar uses `curlimages/curl` and is implemented as a native Kubernetes sid
 ### Requirements
 
 Set the `JOBFATHER_URL` environment variable on the Jobfather deployment to the cluster-internal URL (e.g. `http://jobfather.cicd.svc:8080`). If unset, the sidecar is not injected and job output capture is silently skipped. Logs and events are still captured at archival time.
+
+## Chips
+
+Jobs can write `/job-output/chips.json` to show small name/value tags for each run. The file is a JSON array, and chips are shown in array order:
+
+```json
+[
+  { "name": "coverage", "value": 87.3, "color": "success" },
+  { "name": "env", "value": "staging" },
+  { "name": "flaky", "value": true, "color": "warning" },
+  { "name": "build", "value": "a1b2c3", "color": "#8250df" }
+]
+```
+
+- `name` (required): string
+- `value` (required): string, number, or boolean
+- `color` (optional, default `neutral`): one of `neutral`, `info`, `success`, `warning`, `danger`, or a hex code (`#rgb` / `#rrggbb`). Text color is chosen automatically for hex backgrounds.
+
+Chips appear in a column on the job template's run listing, in the job detail info card, and on the home page for each template's most recent run (once it finishes). Parsing is lenient: invalid entries are skipped, unknown colors fall back to `neutral`, and the job detail page lists what was skipped.
 
 ## Snapshots
 

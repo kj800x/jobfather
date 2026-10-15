@@ -29,6 +29,7 @@ struct JobRow {
     test_results: Option<TestResultSummary>,
     snapshot_status: Option<String>,
     artifact_sha: Option<String>,
+    chips: Vec<crate::chips::Chip>,
 }
 
 struct TestResultSummary {
@@ -171,6 +172,12 @@ pub async fn job_template_detail_fragment(
             .and_then(|a| a.get("artifactSha"))
             .cloned();
 
+        let chips = if is_term {
+            load_live_chips(&job_name_str, &namespace, &pool)
+        } else {
+            vec![]
+        };
+
         rows.push(JobRow {
             name: job_name_str,
             namespace: namespace.clone(),
@@ -182,6 +189,7 @@ pub async fn job_template_detail_fragment(
             test_results,
             snapshot_status,
             artifact_sha,
+            chips,
         });
     }
 
@@ -232,6 +240,7 @@ pub async fn job_template_detail_fragment(
             test_results,
             snapshot_status,
             artifact_sha: job.artifact_sha.clone(),
+            chips: crate::chips::parse_opt(job.output_chips_json.as_deref()),
         });
     }
 
@@ -329,7 +338,11 @@ pub async fn job_template_detail_fragment(
 
 fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &str) -> Markup {
     let has_any_sha = rows.iter().any(|r| r.artifact_sha.is_some());
-    let col_count = 5 + if is_acceptance_test { 2 } else { 0 } + if has_any_sha { 1 } else { 0 };
+    let has_any_chips = rows.iter().any(|r| !r.chips.is_empty());
+    let col_count = 5
+        + if is_acceptance_test { 2 } else { 0 }
+        + if has_any_sha { 1 } else { 0 }
+        + if has_any_chips { 1 } else { 0 };
 
     // Mark rows where the artifact SHA changed from the previous (next in time) row
     let sha_changed: Vec<bool> = rows
@@ -357,6 +370,9 @@ fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &st
                     @if is_acceptance_test {
                         th class="badge-col badge-col-wide" { "Tests" }
                         th class="badge-col badge-col-wide" { "Snapshots" }
+                    }
+                    @if has_any_chips {
+                        th class="chips-col badge-col-wide" { "Chips" }
                     }
                     th class="badge-col badge-col-narrow" { "Info" }
                     th class="time-cell" { "Started" }
@@ -424,6 +440,11 @@ fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &st
                                 }
                             }
                         }
+                        @if has_any_chips {
+                            td class="chips-col badge-col-wide" {
+                                (crate::chips::render(&row.chips))
+                            }
+                        }
                         // Combined badges column for narrow screens
                         td class="badge-col badge-col-narrow" {
                             @if let Some(ref sha) = row.artifact_sha {
@@ -465,6 +486,10 @@ fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &st
                                     }
                                 }
                             }
+                            @if !row.chips.is_empty() {
+                                " "
+                                (crate::chips::render(&row.chips))
+                            }
                         }
                         td class="time-cell" {
                             @if let Some(dt) = row.start_time {
@@ -496,6 +521,19 @@ fn load_live_test_results(
         all_passed: suites.all_passed(),
         failures: suites.total_failures() + suites.total_errors(),
     })
+}
+
+fn load_live_chips(
+    job_name: &str,
+    namespace: &str,
+    pool: &Pool<SqliteConnectionManager>,
+) -> Vec<crate::chips::Chip> {
+    let Ok(conn) = pool.get() else {
+        return vec![];
+    };
+    crate::chips::parse_opt(
+        crate::db::job_output::get_string(job_name, namespace, "chips.json", &conn).as_deref(),
+    )
 }
 
 fn load_live_snapshot_status(

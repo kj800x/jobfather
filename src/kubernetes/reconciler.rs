@@ -197,6 +197,7 @@ async fn reconcile(job: Arc<Job>, ctx: Arc<Context>) -> Result<Action, kube::Err
         artifact_sha,
         config_sha,
         snapshot_baseline_id,
+        output_chips_json: output.chips_json,
     };
 
     // Archive to database

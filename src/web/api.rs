@@ -38,6 +38,9 @@ pub(crate) struct ApiJob {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub chips: Vec<crate::chips::Chip>,
     pub label: Option<String>,
+    /// Whether the finished job passed; `None` while it runs, or when its
+    /// JobTemplate is gone. See [`fill_passed`].
+    pub passed: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -154,6 +157,7 @@ fn live_job_to_api(job: &Job) -> ApiJob {
         artifact_sha,
         chips: vec![],
         label: None,
+        passed: None,
     }
 }
 
@@ -172,6 +176,7 @@ fn archived_job_to_api(job: &ArchivedJob) -> ApiJob {
         artifact_sha: job.artifact_sha.clone(),
         chips: crate::chips::parse_opt(job.output_chips_json.as_deref()),
         label: job.output_label.clone(),
+        passed: None,
     }
 }
 
@@ -281,6 +286,39 @@ fn fill_live_output(
     api_job.label = label;
 }
 
+/// Set `passed` on a finished job. An acceptance test passes by the same
+/// rule as the acceptance metrics (exit status, JUnit results, snapshots);
+/// any other job passes when it succeeded. Outputs are uploaded before the
+/// pod finishes, so a finished job's results are already stored.
+fn fill_passed(api_job: &mut ApiJob, acceptance_test: bool, pool: &Pool<SqliteConnectionManager>) {
+    if !matches!(api_job.status.as_str(), "Succeeded" | "Failed") {
+        return;
+    }
+    api_job.passed = Some(if acceptance_test {
+        let junit_xml = get_test_results_xml(&api_job.name, &api_job.namespace, pool);
+        !crate::metrics::is_acceptance_failure(
+            &api_job.status,
+            junit_xml.as_deref(),
+            api_job.snapshot_status.as_deref(),
+        )
+    } else {
+        api_job.status == "Succeeded"
+    });
+}
+
+/// Whether the JobTemplate that ran `api_job` is an acceptance test, or
+/// `None` when it can't be found.
+async fn template_is_acceptance_test(api_job: &ApiJob, client: &Client) -> Option<bool> {
+    let name = api_job.job_template_name.as_deref()?;
+    let namespace = api_job.job_template_namespace.as_deref()?;
+    let jt_api: Api<JobTemplate> = Api::namespaced(client.clone(), namespace);
+    jt_api
+        .get(name)
+        .await
+        .ok()
+        .map(|jt| jt.is_acceptance_test())
+}
+
 pub(crate) async fn list_jobs_for_template_inner(
     namespace: &str,
     name: &str,
@@ -288,7 +326,8 @@ pub(crate) async fn list_jobs_for_template_inner(
     pool: &Pool<SqliteConnectionManager>,
 ) -> Vec<ApiJob> {
     let jt_api: Api<JobTemplate> = Api::namespaced(client.clone(), namespace);
-    let jt_uid = jt_api.get(name).await.ok().and_then(|jt| jt.uid());
+    let jt = jt_api.get(name).await.ok();
+    let jt_uid = jt.as_ref().and_then(|jt| jt.uid());
 
     let mut jobs: Vec<ApiJob> = Vec::new();
     if let Some(ref uid) = jt_uid {
@@ -321,6 +360,12 @@ pub(crate) async fn list_jobs_for_template_inner(
         }
     }
 
+    if let Some(jt) = &jt {
+        for job in &mut jobs {
+            fill_passed(job, jt.is_acceptance_test(), pool);
+        }
+    }
+
     jobs.sort_by(|a, b| b.start_time.cmp(&a.start_time));
     jobs
 }
@@ -339,13 +384,20 @@ pub(crate) async fn get_job_inner(
         {
             fill_live_output(&mut api_job, namespace, &conn);
         }
+        if let Some(at) = template_is_acceptance_test(&api_job, client).await {
+            fill_passed(&mut api_job, at, pool);
+        }
         return Some(api_job);
     }
 
     if let Ok(conn) = pool.get()
         && let Ok(Some(job)) = ArchivedJob::get_by_name_and_namespace(name, namespace, &conn)
     {
-        return Some(archived_job_to_api(&job));
+        let mut api_job = archived_job_to_api(&job);
+        if let Some(at) = template_is_acceptance_test(&api_job, client).await {
+            fill_passed(&mut api_job, at, pool);
+        }
+        return Some(api_job);
     }
 
     None

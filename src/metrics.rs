@@ -525,15 +525,9 @@ impl Metrics {
                 continue;
             };
 
-            // Job consecutive failures (termination status) — for all templates
-            let mut job_consecutive: u64 = 0;
-            for r in &results {
-                if r.status != "Succeeded" {
-                    job_consecutive += 1;
-                } else {
-                    break;
-                }
-            }
+            // Job consecutive failures (termination status) — for all templates.
+            // Scheduled templates ignore manual runs; see `consecutive_job_failures`.
+            let job_consecutive = consecutive_job_failures(&results, jt.spec.schedule.is_some());
             self.job_consecutive_failures
                 .with_label_values(&[ns, name])
                 .set(job_consecutive as f64);
@@ -595,6 +589,8 @@ impl Metrics {
 /// sources consistently.
 struct CompletedJobResult {
     status: String,
+    /// `scheduled`, `manual`, or `None` when not recorded (jobs from before the trigger label).
+    trigger: Option<String>,
     start_time: String,
     junit_xml: Option<String>,
     snapshot_status: Option<String>,
@@ -612,7 +608,7 @@ fn completed_jobs_for_template(
 ) -> Option<Vec<CompletedJobResult>> {
     // Archived jobs
     let mut stmt = match conn.prepare(
-        "SELECT status, output_test_results_xml, snapshot_status, start_time
+        "SELECT status, output_test_results_xml, snapshot_status, start_time, trigger
          FROM archived_job
          WHERE job_template_name = ?1 AND job_template_namespace = ?2
          ORDER BY start_time DESC
@@ -637,6 +633,7 @@ fn completed_jobs_for_template(
                 junit_xml: row.get(1)?,
                 snapshot_status: row.get(2)?,
                 start_time: row.get(3)?,
+                trigger: row.get(4)?,
             })
         })
         .ok()
@@ -694,6 +691,8 @@ fn completed_jobs_for_template(
 
         results.push(CompletedJobResult {
             status,
+            trigger: crate::kubernetes::trigger::JobTrigger::from_job(job)
+                .map(|t| t.as_str().to_string()),
             start_time,
             junit_xml,
             snapshot_status,
@@ -702,6 +701,24 @@ fn completed_jobs_for_template(
 
     results.sort_by(|a, b| b.start_time.cmp(&a.start_time));
     Some(results)
+}
+
+/// Number of most-recent runs in a row that did not succeed (`results` is newest first).
+///
+/// For templates with a schedule, manual runs are skipped entirely: a manual
+/// failure doesn't extend the streak and a manual success doesn't end it,
+/// because manual runs are often experiments with overridden command/args/env
+/// and say nothing about whether the scheduled configuration works. Only a
+/// successful scheduled run clears the streak. Runs with no recorded trigger
+/// (archived before the trigger label existed) count as scheduled.
+///
+/// Templates without a schedule only ever run on demand, so every run counts.
+fn consecutive_job_failures(results: &[CompletedJobResult], has_schedule: bool) -> u64 {
+    results
+        .iter()
+        .filter(|r| !has_schedule || r.trigger.as_deref() != Some("manual"))
+        .take_while(|r| r.status != "Succeeded")
+        .count() as u64
 }
 
 /// Determine if an acceptance test run counts as a failure.
@@ -738,4 +755,53 @@ pub(crate) fn is_acceptance_failure(
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(status: &str, trigger: Option<&str>) -> CompletedJobResult {
+        CompletedJobResult {
+            status: status.to_string(),
+            trigger: trigger.map(str::to_string),
+            start_time: String::new(),
+            junit_xml: None,
+            snapshot_status: None,
+        }
+    }
+
+    #[test]
+    fn manual_runs_ignored_for_scheduled_templates() {
+        // newest first
+        let results = vec![
+            run("Failed", Some("manual")),
+            run("Succeeded", Some("manual")),
+            run("Failed", Some("scheduled")),
+            run("Failed", None),
+            run("Succeeded", Some("scheduled")),
+            run("Failed", Some("scheduled")),
+        ];
+        assert_eq!(consecutive_job_failures(&results, true), 2);
+    }
+
+    #[test]
+    fn only_manual_failures_do_not_alert() {
+        let results = vec![
+            run("Failed", Some("manual")),
+            run("Failed", Some("manual")),
+            run("Succeeded", Some("scheduled")),
+        ];
+        assert_eq!(consecutive_job_failures(&results, true), 0);
+    }
+
+    #[test]
+    fn unscheduled_templates_count_every_run() {
+        let results = vec![
+            run("Failed", Some("manual")),
+            run("Failed", Some("manual")),
+            run("Succeeded", Some("manual")),
+        ];
+        assert_eq!(consecutive_job_failures(&results, false), 2);
+    }
 }

@@ -35,6 +35,10 @@ JobTemplates with a `schedule` field are automatically run by the scheduler. Sup
 
 The scheduler polls every 30 seconds, checks the last run time (from both live K8s jobs and archived DB), and creates a new job if the schedule is due.
 
+## Trigger
+
+Every Job Jobfather creates carries the label `jobfather.coolkev.com/trigger` (on the Job and its pod template): `scheduled` when the scheduler created it, `manual` for the web UI's Run dialog, `POST` run API, and the MCP `run_job` tool. It's archived into `archived_job.trigger` (NULL for jobs archived before this existed) and shown as a "Manual" badge in the run listing.
+
 ## Metrics
 
 Prometheus metrics are served at `/api/metrics`. Key metrics:
@@ -43,7 +47,8 @@ Prometheus metrics are served at `/api/metrics`. Key metrics:
 - `jobfather_job_longest_running_seconds` — gauge per template
 - `jobfather_time_since_last_completion_seconds` / `..._success_seconds` — gauges updated at scrape time
 - `jobfather_acceptance_consecutive_failures` — gauge for acceptance test templates (considers AT result, not just termination)
-- `jobfather_job_consecutive_failures` — gauge of consecutive non-Succeeded runs per template (all templates)
+- `jobfather_job_consecutive_failures` — gauge of consecutive non-Succeeded runs per template (all templates). For templates with a `schedule`, manual runs are skipped entirely (a manual failure doesn't extend the streak, a manual success doesn't end it); runs with no recorded trigger count as scheduled. Templates without a schedule count every run
+- `jobfather_job_max_permitted_consecutive_failures` — `spec.maxPermittedConsecutiveFailures` (0 if unset). The Grafana rule "Job {{job_template}} failing" fires when consecutive failures `> clamp_min(max_permitted, 1)`, i.e. on the 2nd failure by default
 - `jobfather_job_last_status` — one-hot gauge with `status` label for each template's most recent run
 - `jobfather_test_case_duration_seconds` — gauge per test case from JUnit XML
 - `jobfather_scheduler_tick_duration_seconds` — histogram of scheduler loop iterations

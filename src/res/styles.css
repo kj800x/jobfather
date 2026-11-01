@@ -192,6 +192,12 @@ a:hover {
   color: var(--secondary-text);
 }
 
+/* "Manual" marker next to a run name in the run listing */
+.trigger-badge {
+  vertical-align: middle;
+  font-weight: 500;
+}
+
 /* Chips (emitted by jobs via /job-output/chips.json) */
 .chips {
   display: inline-flex;

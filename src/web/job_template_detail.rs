@@ -32,6 +32,8 @@ struct JobRow {
     chips: Vec<crate::chips::Chip>,
     /// From label.txt; shown instead of the name when present.
     label: Option<String>,
+    /// How the run was started; `None` for runs from before the trigger label.
+    trigger: Option<crate::kubernetes::trigger::JobTrigger>,
 }
 
 struct TestResultSummary {
@@ -196,6 +198,7 @@ pub async fn job_template_detail_fragment(
             artifact_sha,
             chips,
             label,
+            trigger: crate::kubernetes::trigger::JobTrigger::from_job(job),
         });
     }
 
@@ -248,6 +251,10 @@ pub async fn job_template_detail_fragment(
             artifact_sha: job.artifact_sha.clone(),
             chips: crate::chips::parse_opt(job.output_chips_json.as_deref()),
             label: job.output_label.clone(),
+            trigger: job
+                .trigger
+                .as_deref()
+                .and_then(crate::kubernetes::trigger::JobTrigger::parse),
         });
     }
 
@@ -403,6 +410,10 @@ fn render_combined_table(rows: &[JobRow], is_acceptance_test: bool, jt_name: &st
                                 a href=(href) title=(&row.name) { (label) }
                             } @else {
                                 a href=(href) { (display_name) }
+                            }
+                            @if row.trigger == Some(crate::kubernetes::trigger::JobTrigger::Manual) {
+                                " "
+                                span class="badge badge-muted trigger-badge" title="Started manually (Run dialog, API, or MCP run_job)" { "Manual" }
                             }
                         }
                         @if has_any_sha {
@@ -1031,6 +1042,7 @@ pub async fn job_template_run(
 
     let job = match crate::kubernetes::job_create::build_job(
         &job_template,
+        crate::kubernetes::trigger::JobTrigger::Manual,
         crate::kubernetes::job_create::JobOverrides {
             command,
             args: Some(args),

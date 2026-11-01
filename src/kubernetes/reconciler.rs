@@ -233,6 +233,8 @@ pub async fn archive_and_delete(
             job,
         ))
         .ok(),
+        trigger: crate::kubernetes::trigger::JobTrigger::from_job(job)
+            .map(|t| t.as_str().to_string()),
     };
 
     // Archive to database

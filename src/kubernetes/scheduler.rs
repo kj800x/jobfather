@@ -211,7 +211,11 @@ pub async fn run(client: Client, pool: Pool<SqliteConnectionManager>, metrics: A
             }
 
             // Create the job
-            match super::job_create::build_job(jt, Default::default()) {
+            match super::job_create::build_job(
+                jt,
+                super::trigger::JobTrigger::Scheduled,
+                Default::default(),
+            ) {
                 Ok(job) => {
                     let job_name = job.metadata.name.clone().unwrap_or_default();
                     let job_api: Api<Job> = Api::namespaced(client.clone(), namespace);

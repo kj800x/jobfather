@@ -4,6 +4,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::ResourceExt;
 
 use crate::kubernetes::JobTemplate;
+use crate::kubernetes::trigger::{JobTrigger, TRIGGER_LABEL};
 
 /// Per-run overrides applied to the JobTemplate's first container. `None` leaves
 /// the template's value untouched.
@@ -14,7 +15,11 @@ pub struct JobOverrides {
     pub env: Option<Vec<(String, String)>>,
 }
 
-pub fn build_job(job_template: &JobTemplate, overrides: JobOverrides) -> Result<Job, String> {
+pub fn build_job(
+    job_template: &JobTemplate,
+    trigger: JobTrigger,
+    overrides: JobOverrides,
+) -> Result<Job, String> {
     let JobOverrides { command, args, env } = overrides;
     let namespace = job_template
         .metadata
@@ -171,10 +176,16 @@ pub fn build_job(job_template: &JobTemplate, overrides: JobOverrides) -> Result<
         })
         .unwrap_or_default();
 
+    let trigger_labels: std::collections::BTreeMap<String, String> =
+        [(TRIGGER_LABEL.to_string(), trigger.as_str().to_string())]
+            .into_iter()
+            .collect();
+
     let job = Job {
         metadata: ObjectMeta {
             name: Some(job_name),
             namespace: Some(namespace.to_string()),
+            labels: Some(trigger_labels.clone()),
             annotations: if sha_annotations.is_empty() {
                 None
             } else {
@@ -194,8 +205,11 @@ pub fn build_job(job_template: &JobTemplate, overrides: JobOverrides) -> Result<
         },
         spec: Some(JobSpec {
             template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(trigger_labels),
+                    ..Default::default()
+                }),
                 spec: Some(pod_template),
-                ..Default::default()
             },
             backoff_limit: Some(0),
             ..Default::default()

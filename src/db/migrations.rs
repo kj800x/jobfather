@@ -103,6 +103,7 @@ pub fn migrate(
             );",
         ),
         M::up("ALTER TABLE archived_job ADD COLUMN commands_json TEXT;"),
+        M::up("ALTER TABLE archived_job ADD COLUMN trigger TEXT;"),
     ]);
 
     migrations.to_latest(&mut conn)?;

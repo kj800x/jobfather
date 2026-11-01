@@ -572,6 +572,7 @@ pub(crate) async fn run_job_inner(
 
     let job = crate::kubernetes::job_create::build_job(
         &job_template,
+        crate::kubernetes::trigger::JobTrigger::Manual,
         crate::kubernetes::job_create::JobOverrides {
             args,
             env: env_vec,

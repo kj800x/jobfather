@@ -273,7 +273,7 @@ fn error_policy(_job: Arc<Job>, error: &kube::Error, _ctx: Arc<Context>) -> Acti
 }
 
 /// Returns the time a job reached a terminal state (Succeeded or Failed).
-fn terminal_time(job: &Job) -> Option<chrono::DateTime<Utc>> {
+pub(crate) fn terminal_time(job: &Job) -> Option<chrono::DateTime<Utc>> {
     let status = job.status.as_ref()?;
 
     // Check completion_time first (set on success)

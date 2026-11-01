@@ -442,12 +442,9 @@ impl Metrics {
                     continue;
                 }
 
-                // Check if job has a completion time
-                let comp_time = job
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.completion_time.as_ref())
-                    .map(|t| t.0);
+                // When the job finished (completionTime is only set on success,
+                // so failed jobs use their Failed condition's transition time)
+                let comp_time = crate::kubernetes::reconciler::terminal_time(job);
 
                 if let Some(ct) = comp_time {
                     let entry = last_completion.entry(key.clone()).or_insert(ct);
@@ -652,7 +649,23 @@ fn completed_jobs_for_template(
             continue;
         }
 
-        let Some(completion_time) = job.status.as_ref().and_then(|s| s.completion_time.as_ref())
+        // A Job is finished once it has a true Complete or Failed condition.
+        // Don't key off status.completionTime: Kubernetes only sets it for
+        // successful Jobs, so failed live Jobs would be skipped until archived.
+        let Some((status, finished_at)) = job
+            .status
+            .as_ref()
+            .and_then(|s| s.conditions.as_ref())
+            .and_then(|conds| {
+                conds.iter().find_map(|c| {
+                    let status = match (c.type_.as_str(), c.status.as_str()) {
+                        ("Complete", "True") => "Succeeded",
+                        ("Failed", "True") => "Failed",
+                        _ => return None,
+                    };
+                    Some((status.to_string(), c.last_transition_time.as_ref()))
+                })
+            })
         else {
             continue;
         };
@@ -661,28 +674,13 @@ fn completed_jobs_for_template(
             .status
             .as_ref()
             .and_then(|s| s.start_time.as_ref())
+            .or(finished_at)
+            .or(job.metadata.creation_timestamp.as_ref())
             .map(|t| t.0.to_rfc3339())
-            .unwrap_or_else(|| completion_time.0.to_rfc3339());
+            .unwrap_or_default();
 
         let job_name = job.metadata.name.as_deref().unwrap_or("");
         let job_ns = job.metadata.namespace.as_deref().unwrap_or("default");
-
-        let status = job
-            .status
-            .as_ref()
-            .and_then(|s| s.conditions.as_ref())
-            .and_then(|conds| {
-                for c in conds {
-                    if c.type_ == "Complete" && c.status == "True" {
-                        return Some("Succeeded".to_string());
-                    }
-                    if c.type_ == "Failed" && c.status == "True" {
-                        return Some("Failed".to_string());
-                    }
-                }
-                None
-            })
-            .unwrap_or_else(|| "Unknown".to_string());
 
         let junit_xml =
             crate::db::job_output::get_string(job_name, job_ns, "test-results.xml", conn);

@@ -108,10 +108,25 @@ pub async fn job_templates_fragment(
         })
         .collect();
 
-    let has_any_chips = rows
+    // The AT result is shown as a chip ahead of the job's own chips.
+    let row_chips: Vec<Vec<crate::chips::Chip>> = rows
         .iter()
-        .any(|r| r.last_run.as_ref().is_some_and(|lr| !lr.chips.is_empty()));
-    let col_count = if has_any_chips { 6 } else { 5 };
+        .map(|r| {
+            let at_chip = r.at_status.map(|passed| crate::chips::Chip {
+                name: "AT".to_string(),
+                value: serde_json::Value::String(
+                    if passed { "Passed" } else { "Failed" }.to_string(),
+                ),
+                color: if passed { "success" } else { "danger" }.to_string(),
+            });
+            at_chip
+                .into_iter()
+                .chain(r.last_run.iter().flat_map(|lr| lr.chips.iter().cloned()))
+                .collect()
+        })
+        .collect();
+    let has_any_chips = row_chips.iter().any(|c| !c.is_empty());
+    let col_count = if has_any_chips { 5 } else { 4 };
 
     let markup = html! {
         table class="jt-table" {
@@ -124,7 +139,6 @@ pub async fn job_templates_fragment(
                     @if has_any_chips {
                         th class="chips-col" { "Chips" }
                     }
-                    th { "AT Status" }
                 }
             }
             tbody {
@@ -135,7 +149,7 @@ pub async fn job_templates_fragment(
                         }
                     }
                 }
-                @for row in &rows {
+                @for (row, chips) in rows.iter().zip(&row_chips) {
                     tr {
                         td class="jt-name" {
                             a href=(format!("/job-templates/{}/{}", row.namespace, row.name)) {
@@ -159,18 +173,7 @@ pub async fn job_templates_fragment(
                         }
                         @if has_any_chips {
                             td class="chips-col" {
-                                @if let Some(lr) = &row.last_run {
-                                    (crate::chips::render(&lr.chips))
-                                }
-                            }
-                        }
-                        td {
-                            @if let Some(passed) = row.at_status {
-                                @if passed {
-                                    span class="badge badge-success" { "Passed" }
-                                } @else {
-                                    span class="badge badge-danger" { "Failed" }
-                                }
+                                (crate::chips::render(chips))
                             }
                         }
                     }

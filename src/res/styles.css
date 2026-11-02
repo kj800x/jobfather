@@ -140,6 +140,10 @@ a:hover {
   font-weight: 600;
 }
 
+.jt-schedule {
+  min-width: 8rem; /* fits a typical 10–13 char cron expression on one line */
+}
+
 .jt-schedule code {
   background: var(--bg-light);
   padding: 2px 6px;
